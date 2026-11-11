@@ -1,0 +1,80 @@
+import hashlib
+
+import pytest
+
+from fmbot_tg.charts import Tile, parse_size, render
+from fmbot_tg.db import Database
+from fmbot_tg.lastfm import parse_recent_tracks, parse_top, pick_image, sign
+from fmbot_tg.periods import ALL_TIME, MONTHLY, WEEKLY, UnsupportedPeriod, parse_period
+
+
+def test_period_is_pulled_out_of_args_wherever_it_is():
+    assert parse_period(["@alice", "monthly"]) == (MONTHLY, ["@alice"])
+    assert parse_period(["at", "x"]) == (ALL_TIME, ["x"])
+    assert parse_period([]) == (WEEKLY, [])
+
+
+def test_daily_periods_are_rejected_instead_of_treated_as_a_username():
+    with pytest.raises(UnsupportedPeriod):
+        parse_period(["today"])
+
+
+def test_signature_excludes_format_and_sorts_keys():
+    params = {"token": "abc", "method": "auth.getSession", "api_key": "key", "format": "json"}
+    expected = hashlib.md5(b"api_keykeymethodauth.getSessiontokenabcsecret").hexdigest()
+    assert sign(params, "secret") == expected
+
+
+def test_single_recent_track_is_returned_as_object_not_list():
+    data = {"recenttracks": {
+        "@attr": {"total": "1"},
+        "track": {"name": "Idioteque", "artist": {"name": "Radiohead"}, "album": {"#text": "Kid A"},
+                  "url": "u", "image": [], "@attr": {"nowplaying": "true"}},
+    }}
+    result = parse_recent_tracks(data)
+    assert result.total == 1
+    assert result.tracks[0].artist == "Radiohead"
+    assert result.tracks[0].now_playing and result.tracks[0].timestamp is None
+
+
+def test_top_albums_parses_nested_artist():
+    data = {"topalbums": {"@attr": {"total": "2", "page": "1", "totalPages": "1"}, "album": [
+        {"name": "OK Computer", "artist": {"name": "Radiohead"}, "playcount": "12", "url": "u", "image": []},
+    ]}}
+    top = parse_top(data, "albums")
+    assert top.items[0].artist == "Radiohead" and top.items[0].playcount == 12
+
+
+def test_placeholder_images_are_ignored():
+    images = [{"size": "extralarge", "#text": "https://x/2a96cbd8b46e442fc41c2b86b821562f.png"}]
+    assert pick_image(images) is None
+
+
+def test_chart_size_bounds():
+    assert parse_size("4x3") == (4, 3)
+    assert parse_size("11x2") is None
+    assert parse_size("0x5") is None
+    assert parse_size("weekly") is None
+
+
+def test_chart_renders_with_missing_covers():
+    jpeg = render([Tile(None, "Album", "Artist")] * 4, 2, 2)
+    assert jpeg[:2] == b"\xff\xd8"
+
+
+async def test_whoknows_members_only_include_linked_users_in_that_chat(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    await db.create_schema()
+    await db.touch(1, "alice", "Alice", chat_id=-100)
+    await db.touch(2, "bob", "Bob", chat_id=-100)
+    await db.touch(3, "carol", "Carol", chat_id=-200)
+    await db.link_lastfm(1, "alice_lfm", "sk1")
+    await db.link_lastfm(3, "carol_lfm", "sk3")
+
+    members = await db.chat_lastfm_users(-100, limit=10)
+    assert [m.lastfm_username for m in members] == ["alice_lfm"]
+
+    await db.remove_member(-100, 1)
+    assert await db.chat_lastfm_users(-100, limit=10) == []
+    assert (await db.get_user_by_handle("@Carol")).lastfm_username == "carol_lfm"
+    await db.close()

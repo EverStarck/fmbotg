@@ -1,0 +1,101 @@
+"""Entry point: `python -m fmbot_tg` (port of FMBot.Bot Program.cs / Startup.cs)."""
+
+import asyncio
+import logging
+
+import httpx
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import ExceptionTypeFilter
+from aiogram.types import BotCommand, ErrorEvent
+
+from .config import Settings
+from .context import UserFacingError
+from .db import Database
+from .handlers import all_routers
+from .lastfm import LastFmClient, LastFmError
+from .middleware import TrackMembersMiddleware, membership_router
+
+log = logging.getLogger("fmbot_tg")
+
+COMMANDS = [
+    BotCommand(command="fm", description="What you're listening to now"),
+    BotCommand(command="recent", description="Your latest scrobbles"),
+    BotCommand(command="topartists", description="Top artists (add a period like monthly)"),
+    BotCommand(command="topalbums", description="Top albums"),
+    BotCommand(command="toptracks", description="Top tracks"),
+    BotCommand(command="artist", description="Artist info and your plays"),
+    BotCommand(command="album", description="Album info and your plays"),
+    BotCommand(command="track", description="Track info and your plays"),
+    BotCommand(command="whoknows", description="Who listens to an artist the most here"),
+    BotCommand(command="whoknowsalbum", description="Who listens to an album the most here"),
+    BotCommand(command="whoknowstrack", description="Who listens to a track the most here"),
+    BotCommand(command="chart", description="Album collage, e.g. /chart 4x4 monthly"),
+    BotCommand(command="profile", description="Last.fm profile stats"),
+    BotCommand(command="login", description="Connect your Last.fm account"),
+    BotCommand(command="logout", description="Disconnect your Last.fm account"),
+    BotCommand(command="help", description="All commands"),
+]
+
+
+async def _reply_error(event: ErrorEvent, text: str) -> None:
+    update = event.update
+    if update.message:
+        await update.message.reply(text)
+    elif update.callback_query:
+        await update.callback_query.answer(text[:200], show_alert=True)
+
+
+def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings) -> Dispatcher:
+    dp = Dispatcher(db=db, lastfm=lastfm, settings=settings)
+    dp.message.outer_middleware(TrackMembersMiddleware(db))
+    dp.include_router(membership_router)
+    for router in all_routers():
+        dp.include_router(router)
+
+    @dp.errors(ExceptionTypeFilter(UserFacingError))
+    async def user_facing(event: ErrorEvent) -> None:
+        await _reply_error(event, str(event.exception))
+
+    @dp.errors(ExceptionTypeFilter(LastFmError))
+    async def lastfm_error(event: ErrorEvent) -> None:
+        await _reply_error(event, event.exception.user_message())
+
+    @dp.errors()
+    async def unexpected(event: ErrorEvent) -> None:
+        log.exception("Unhandled error", exc_info=event.exception)
+        await _reply_error(event, "Something went wrong. Please try again.")
+
+    return dp
+
+
+async def run() -> None:
+    settings = Settings.from_env()
+    db = Database(settings.database_url)
+    await db.create_schema()
+
+    http = httpx.AsyncClient(timeout=15, headers={"User-Agent": "fmbot-telegram/0.1"})
+    lastfm = LastFmClient(settings.lastfm_api_key, settings.lastfm_api_secret, settings.lastfm_private_key, http)
+    bot = Bot(settings.telegram_token,
+              default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True))
+    dp = build_dispatcher(db, lastfm, settings)
+
+    await bot.set_my_commands(COMMANDS)
+    me = await bot.get_me()
+    log.info("Starting as @%s", me.username)
+    try:
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    finally:
+        await lastfm.close()
+        await db.close()
+        await bot.session.close()
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    asyncio.run(run())
+
+
+if __name__ == "__main__":
+    main()
