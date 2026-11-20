@@ -13,7 +13,8 @@ from ..context import UserFacingError, resolve_target
 from ..db import Database
 from ..formatting import esc, user_link
 from ..lastfm import LastFmClient
-from ..periods import UnsupportedPeriod, parse_period
+from ..periods import parse_period
+from ..stats import Stats
 
 router = Router(name="chart")
 _download_sem = asyncio.Semaphore(16)
@@ -31,12 +32,9 @@ async def _download(http: httpx.AsyncClient, url: str | None) -> bytes | None:
 
 
 @router.message(Command("chart", "c"))
-async def chart(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
-    args = (command.args or "").split()
-    try:
-        period, args = parse_period(args)
-    except UnsupportedPeriod as exc:
-        raise UserFacingError(esc(str(exc))) from exc
+async def chart(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
+                stats: Stats) -> None:
+    period, args = parse_period((command.args or "").split())
 
     cols, rows = 3, 3
     titles = True
@@ -52,14 +50,19 @@ async def chart(message: Message, command: CommandObject, lastfm: LastFmClient, 
     target, _ = await resolve_target(message, remaining, db)
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
-    top = await lastfm.top(target.lastfm_username, "albums", period.api, limit=cols * rows)
+    top = await stats.top(target, "albums", period, page=1, page_size=cols * rows)
     if not top.items:
-        raise UserFacingError(f"No {period.label} albums for {user_link(target.lastfm_username)}.")
+        raise UserFacingError(f"No albums for {user_link(target.lastfm_username)} ({esc(period.label)}).")
 
-    covers = await asyncio.gather(*(_download(lastfm.http, item.image) for item in top.items))
+    async def cover(item) -> bytes | None:
+        # Index-based (time range) charts have no image URLs; look those up separately.
+        url = item.image or (await stats.album_image(item.artist, item.name) if period.is_range else None)
+        return await _download(lastfm.http, url)
+
+    covers = await asyncio.gather(*(cover(item) for item in top.items))
     tiles = [Tile(image=cover, title=item.name, subtitle=item.artist or "")
              for item, cover in zip(top.items, covers)]
     image = await asyncio.to_thread(render, tiles, cols, rows, titles)
 
-    caption = f"{cols}x{rows} {period.label} album chart for {user_link(target.lastfm_username)}"
+    caption = f"{cols}x{rows} album chart for {user_link(target.lastfm_username)} · {esc(period.label)}"
     await message.reply_photo(BufferedInputFile(image, filename="chart.jpg"), caption=caption)

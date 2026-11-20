@@ -14,8 +14,11 @@ from .config import Settings
 from .context import UserFacingError
 from .db import Database
 from .handlers import all_routers
+from .indexer import Indexer
 from .lastfm import LastFmClient, LastFmError
 from .middleware import TrackMembersMiddleware, membership_router
+from .migrate import upgrade as run_migrations
+from .stats import Stats
 
 log = logging.getLogger("fmbot_tg")
 
@@ -33,6 +36,7 @@ COMMANDS = [
     BotCommand(command="whoknowstrack", description="Who listens to a track the most here"),
     BotCommand(command="chart", description="Album collage, e.g. /chart 4x4 monthly"),
     BotCommand(command="profile", description="Last.fm profile stats"),
+    BotCommand(command="update", description="Fetch your latest scrobbles"),
     BotCommand(command="login", description="Connect your Last.fm account"),
     BotCommand(command="logout", description="Disconnect your Last.fm account"),
     BotCommand(command="help", description="All commands"),
@@ -47,8 +51,8 @@ async def _reply_error(event: ErrorEvent, text: str) -> None:
         await update.callback_query.answer(text[:200], show_alert=True)
 
 
-def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings) -> Dispatcher:
-    dp = Dispatcher(db=db, lastfm=lastfm, settings=settings)
+def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings, indexer: Indexer) -> Dispatcher:
+    dp = Dispatcher(db=db, lastfm=lastfm, settings=settings, indexer=indexer, stats=Stats(db, lastfm, indexer))
     dp.message.outer_middleware(TrackMembersMiddleware(db))
     dp.include_router(membership_router)
     for router in all_routers():
@@ -73,20 +77,22 @@ def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings) -> 
 async def run() -> None:
     settings = Settings.from_env()
     db = Database(settings.database_url)
-    await db.create_schema()
 
     http = httpx.AsyncClient(timeout=15, headers={"User-Agent": "fmbot-telegram/0.1"})
     lastfm = LastFmClient(settings.lastfm_api_key, settings.lastfm_api_secret, settings.lastfm_private_key, http)
     bot = Bot(settings.telegram_token,
               default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True))
-    dp = build_dispatcher(db, lastfm, settings)
+    indexer = Indexer(db, lastfm, notify=lambda chat_id, text: bot.send_message(chat_id, text))
+    dp = build_dispatcher(db, lastfm, settings, indexer)
 
     await bot.set_my_commands(COMMANDS)
     me = await bot.get_me()
     log.info("Starting as @%s", me.username)
+    indexer.start()
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        await indexer.stop()
         await lastfm.close()
         await db.close()
         await bot.session.close()
@@ -94,6 +100,7 @@ async def run() -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    run_migrations(Settings.from_env().database_url)
     asyncio.run(run())
 
 

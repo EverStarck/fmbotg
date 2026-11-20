@@ -1,11 +1,10 @@
 import hashlib
-
-import pytest
+from datetime import datetime, timezone
 
 from fmbot_tg.charts import Tile, parse_size, render
 from fmbot_tg.db import Database
 from fmbot_tg.lastfm import parse_recent_tracks, parse_top, pick_image, sign
-from fmbot_tg.periods import ALL_TIME, MONTHLY, WEEKLY, UnsupportedPeriod, parse_period
+from fmbot_tg.periods import ALL_TIME, MONTHLY, ROLLING_DAYS, WEEKLY, YESTERDAY, parse_period, period_from_key
 
 
 def test_period_is_pulled_out_of_args_wherever_it_is():
@@ -14,9 +13,18 @@ def test_period_is_pulled_out_of_args_wherever_it_is():
     assert parse_period([]) == (WEEKLY, [])
 
 
-def test_daily_periods_are_rejected_instead_of_treated_as_a_username():
-    with pytest.raises(UnsupportedPeriod):
-        parse_period(["today"])
+def test_range_periods_and_years():
+    now = datetime(2026, 3, 1, 15, 30, tzinfo=timezone.utc)
+    assert parse_period(["3d"])[0] == ROLLING_DAYS[3]
+    start, end = YESTERDAY.bounds(now)
+    assert datetime.fromtimestamp(start, timezone.utc) == datetime(2026, 2, 28, tzinfo=timezone.utc)
+    assert datetime.fromtimestamp(end, timezone.utc) == datetime(2026, 3, 1, tzinfo=timezone.utc)
+
+    year, rest = parse_period(["2019", "@bob"])
+    assert year.label == "2019" and rest == ["@bob"]
+    assert period_from_key(year.key) == year
+    # Not a year we can have scrobbles for, so it stays in the args
+    assert parse_period(["1999"]) == (WEEKLY, ["1999"])
 
 
 def test_signature_excludes_format_and_sorts_keys():

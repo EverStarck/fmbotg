@@ -107,6 +107,8 @@ class Scrobble:
 class RecentTracks:
     tracks: list[Scrobble]
     total: int
+    page: int = 1
+    total_pages: int = 1
 
 
 @dataclass(frozen=True)
@@ -144,8 +146,9 @@ def parse_recent_tracks(data: dict) -> RecentTracks:
                 loved=str(item.get("loved", "0")) == "1",
             )
         )
-    total = _int((root.get("@attr") or {}).get("total"))
-    return RecentTracks(tracks=tracks, total=total)
+    attr = root.get("@attr") or {}
+    return RecentTracks(tracks=tracks, total=_int(attr.get("total")), page=_int(attr.get("page")) or 1,
+                        total_pages=_int(attr.get("totalPages")) or 1)
 
 
 def parse_top(data: dict, kind: TopKind) -> TopList:
@@ -254,8 +257,22 @@ class LastFmClient:
     async def user_info(self, username: str) -> dict:
         return (await self.call("user.getInfo", user=username))["user"]
 
-    async def recent_tracks(self, username: str, limit: int = 10, session_key: str | None = None) -> RecentTracks:
-        data = await self.call("user.getRecentTracks", user=username, limit=limit, extended=1, sk=session_key)
+    async def recent_tracks(
+        self,
+        username: str,
+        limit: int = 10,
+        session_key: str | None = None,
+        *,
+        page: int = 1,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        extended: bool = True,
+    ) -> RecentTracks:
+        """Newest first. `from_ts`/`to_ts` are unix seconds; Last.fm accepts up to 1000 per page."""
+        data = await self.call(
+            "user.getRecentTracks", user=username, limit=limit, page=page, extended=int(extended),
+            sk=session_key, **{"from": from_ts, "to": to_ts},
+        )
         return parse_recent_tracks(data)
 
     async def top(self, username: str, kind: TopKind, period: str, limit: int = 10, page: int = 1) -> TopList:

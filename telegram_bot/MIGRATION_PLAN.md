@@ -34,22 +34,27 @@ Python/Telegram port, built in phases. Each phase ships a working bot.
 - `/chart` album collage, sizes up to 10x10 (Pillow)
 - SQLite by default, Postgres via `DATABASE_URL`
 
-Known phase 1 limitations:
-- Who knows calls Last.fm once per member (cached). Fine for groups up to a few hundred linked users; phase 2 replaces it.
+Known limitations, still open:
 - Members only appear after they've sent a message the bot can see. With privacy mode on, that means a command.
-- The schema is created with `create_all`; no migrations yet.
 
-## Phase 2: play index (the foundation for most remaining features)
+## Phase 2: play index (done)
 
-FMBot's speed comes from indexing every user's full scrobble history into Postgres
-(`IndexService`, `UpdateService`, `SmallIndexRepository`, `user_plays`, `user_artists`,
-`user_albums`, `user_tracks`). Almost everything in phases 3–5 reads from these tables.
+- Alembic migrations, run at startup (`migrate.py`); databases created by phase 1 are stamped and upgraded
+- `user_plays` table with lower-cased match keys and indexes for user/time, artist, album and track lookups
+- `Indexer`: queued full imports (1000 scrobbles/page, bounded by the start time), incremental updates from
+  the last indexed scrobble, a per-user lock, and a background loop that refreshes active users and retries
+  failed imports (replaces Hangfire `TimerService` for now)
+- Import after `/login`, `/update` and `/update full`, history status in `/profile`; switching or unlinking
+  a Last.fm account deletes the old plays
+- Who knows: SQL counts for indexed members, live Last.fm lookups for the rest, autocorrected subject names
+- Time range periods: today, yesterday, 1–6 days, two-year and calendar years, from the index; ranges up
+  to 8 days also work live for unindexed users. `/chart` supports them, looking covers up through `album.getInfo`
 
-- Postgres + Alembic migrations; tables: `user_plays`, `user_artists`, `user_albums`, `user_tracks`, `artists`, `albums`, `tracks`
-- Initial import worker (paged `user.getRecentTracks`, 1000/page), incremental update job (`UpdateService`)
-- Switch who knows to SQL (`WhoKnowsArtistService`, `WhoKnowsAlbumService`, `WhoKnowsTrackService`, `WhoKnowsFilterService`)
-- Daily / custom / 2-year periods in `periods.py` (currently rejected with a message)
-- Job runner (arq or APScheduler) replacing Hangfire `TimerService`
+Deferred from phase 2:
+- Per-user time zones (calendar periods are UTC). Comes with the phase 3 settings command.
+- `user_artists`/`user_albums`/`user_tracks` aggregate tables. FMBot keeps them so all-time counts match
+  Last.fm's own totals; here aggregates are computed from `user_plays`, which is fine until it gets slow.
+- Moving the indexer to separate worker processes (arq + Redis) when one process is no longer enough.
 
 ## Phase 3: Last.fm command parity
 

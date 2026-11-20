@@ -32,12 +32,14 @@ class Target:
     lastfm_username: str
     session_key: str | None
     is_self: bool
+    user_id: int | None = None  # set for registered users
+    indexed: bool = False  # full scrobble history is in the play index
 
 
 def _target_from_user(user: User | None, is_self: bool, who: str) -> Target:
     if user is None or not user.lastfm_username:
         raise NotRegistered(NOT_REGISTERED_SELF if is_self else f"{who} hasn't connected Last.fm to this bot.")
-    return Target(user.lastfm_username, user.session_key, is_self)
+    return Target(user.lastfm_username, user.session_key, is_self, user.id, user.indexed_at is not None)
 
 
 async def resolve_target(message: Message, args: list[str], db: Database) -> tuple[Target, list[str]]:
