@@ -7,6 +7,7 @@ import httpx
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.filters import ExceptionTypeFilter
 from aiogram.types import BotCommand, ErrorEvent
 
@@ -104,11 +105,14 @@ async def run() -> None:
     indexer = Indexer(db, lastfm, notify=lambda chat_id, text: bot.send_message(chat_id, text))
     dp = build_dispatcher(db, lastfm, settings, indexer)
 
-    await bot.set_my_commands(COMMANDS)
-    me = await bot.get_me()
-    log.info("Starting as @%s", me.username)
-    indexer.start()
     try:
+        try:
+            me = await bot.get_me()
+        except TelegramUnauthorizedError:
+            raise SystemExit("Telegram rejected TELEGRAM_BOT_TOKEN. Copy it again from @BotFather.") from None
+        await bot.set_my_commands(COMMANDS)
+        log.info("Starting as @%s", me.username)
+        indexer.start()
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await indexer.stop()
