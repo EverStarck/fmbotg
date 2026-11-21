@@ -15,8 +15,9 @@ dependencies = [
     "tzdata>=2024.1",
 ]
 
-[project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+[dependency-groups]
+# Installed by `uv sync` by default
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "pyflakes>=3"]
 
 [project.scripts]
 fmbot-tg = "fmbot_tg.__main__:main"

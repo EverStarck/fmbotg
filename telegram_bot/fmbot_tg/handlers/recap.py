@@ -11,7 +11,7 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from ..charts import render_receipt
-from ..context import Target, UserFacingError, resolve_target
+from ..context import STALE_BUTTON, Target, UserFacingError, resolve_target
 from ..db import Database
 from ..formatting import TELEGRAM_TEXT_LIMIT, esc, link, num, plural, truncate, user_link
 from ..lastfm import LastFmClient, LastFmError
@@ -122,6 +122,9 @@ async def recap(message: Message, command: CommandObject, lastfm: LastFmClient, 
 @router.callback_query(RecapView.filter(F.view.in_(VIEWS)))
 async def recap_view(query: CallbackQuery, callback_data: RecapView, lastfm: LastFmClient, db: Database,
                      stats: Stats) -> None:
+    if not isinstance(query.message, Message):  # older than 48 hours, or deleted
+        await query.answer(STALE_BUTTON, show_alert=True)
+        return
     period = period_from_key(callback_data.period)
     if period is None:
         await query.answer()

@@ -12,7 +12,7 @@ from aiogram.filters import ExceptionTypeFilter
 from aiogram.types import BotCommand, ErrorEvent
 
 from .config import Settings
-from .context import UserFacingError
+from .context import UserFacingError, configure_aliases
 from .db import Database
 from .handlers import all_routers
 from .indexer import Indexer
@@ -72,6 +72,7 @@ async def _reply_error(event: ErrorEvent, text: str) -> None:
 
 
 def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings, indexer: Indexer) -> Dispatcher:
+    configure_aliases(settings.fm_aliases)
     dp = Dispatcher(db=db, lastfm=lastfm, settings=settings, indexer=indexer, stats=Stats(db, lastfm, indexer))
     dp.message.outer_middleware(TrackMembersMiddleware(db))
     dp.include_router(membership_router)

@@ -1,5 +1,6 @@
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
@@ -9,6 +10,21 @@ def _required(name: str) -> str:
     if not value:
         raise RuntimeError(f"Missing required environment variable {name} (see .env.example)")
     return value
+
+
+def parse_fm_aliases(raw: str | None) -> dict[int, dict[str, str]]:
+    """FM_ALIASES: JSON of chat id -> {nickname: Last.fm username}, e.g.
+    {"-1001234567890": {"alex": "alexlfm"}}. Nicknames are matched case-insensitively."""
+    if not raw or not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+        return {int(chat): {nick.lower(): str(user) for nick, user in names.items()}
+                for chat, names in data.items()}
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise RuntimeError(
+            'FM_ALIASES must be JSON like {"-1001234567890": {"nickname": "lastfmuser"}}'
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -21,6 +37,8 @@ class Settings:
     lastfm_private_key: str | None
     database_url: str
     whoknows_max_members: int
+    # Per-chat /fm nicknames, kept out of the code so friends' usernames don't end up on GitHub
+    fm_aliases: dict[int, dict[str, str]] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -32,4 +50,5 @@ class Settings:
             lastfm_private_key=os.getenv("LASTFM_PRIVATE_KEY") or None,
             database_url=os.getenv("DATABASE_URL", "sqlite+aiosqlite:///fmbot.db"),
             whoknows_max_members=int(os.getenv("WHOKNOWS_MAX_MEMBERS", "100")),
+            fm_aliases=parse_fm_aliases(os.getenv("FM_ALIASES")),
         )

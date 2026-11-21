@@ -23,6 +23,9 @@ class NotRegistered(UserFacingError):
     pass
 
 
+STALE_BUTTON = "This message is too old for its buttons. Run the command again."
+
+
 NOT_REGISTERED_SELF = (
     "You haven't connected your Last.fm account yet.\n"
     "Send /login to me in a private chat to get started."
@@ -61,11 +64,42 @@ def _target_from_user(user: User | None, is_self: bool, who: str) -> Target:
     return Target.from_user(user, is_self)
 
 
-async def resolve_target(message: Message, args: list[str], db: Database) -> tuple[Target, list[str]]:
+# Per-chat nicknames from FM_ALIASES in .env (chat id -> {nickname: Last.fm username}), set at startup.
+_chat_aliases: dict[int, dict[str, str]] = {}
+
+
+def configure_aliases(aliases: dict[int, dict[str, str]]) -> None:
+    _chat_aliases.clear()
+    _chat_aliases.update(aliases)
+
+
+def apply_alias(chat_id: int, args: list[str], search: bool = False) -> list[str]:
+    """Replace a nickname with `lfm:<username>`.
+
+    Without a search, any word can be a nickname. Commands that also take a search ("/artist red hot
+    chili peppers") only check the last word, so names at the start of a search aren't taken as people.
+    """
+    names = _chat_aliases.get(chat_id)
+    if not names or not args:
+        return list(args)
+    for index in ([len(args) - 1] if search else range(len(args))):
+        nickname = args[index].lower()
+        if nickname in names:
+            return args[:index] + [f"lfm:{names[nickname]}"] + args[index + 1:]
+    return list(args)
+
+
+async def resolve_target(message: Message, args: list[str], db: Database,
+                         search: bool = False) -> tuple[Target, list[str]]:
+    """Who the command is about. Set `search=True` when the remaining args are a music search."""
+    args = apply_alias(message.chat.id, args, search)
     for index, arg in enumerate(args):
         rest = args[:index] + args[index + 1:]
         if arg.lower().startswith("lfm:") and len(arg) > 4:
-            return Target(arg[4:], None, False), rest
+            name = arg[4:]
+            # Someone who connected Last.fm to the bot gets their index and settings too
+            user = await db.get_user_by_lastfm(name)
+            return (Target.from_user(user, False) if user else Target(name, None, False)), rest
         if arg.startswith("@") and len(arg) > 1:
             return _target_from_user(await db.get_user_by_handle(arg), False, arg), rest
 

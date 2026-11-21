@@ -38,7 +38,7 @@ async def _send(message: Message, text: str, image: str | None) -> None:
 
 @router.message(Command("artist", "a", "artistinfo"))
 async def artist(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
-    target, rest = await resolve_target(message, (command.args or "").split(), db)
+    target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     (name,) = await resolve_subject("artist", " ".join(rest), target, lastfm)
     info = await lastfm.artist_info(name, target.lastfm_username)
     stats = info.get("stats") or {}
@@ -59,7 +59,7 @@ async def artist(message: Message, command: CommandObject, lastfm: LastFmClient,
 
 @router.message(Command("album", "ab", "albuminfo"))
 async def album(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
-    target, rest = await resolve_target(message, (command.args or "").split(), db)
+    target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     artist_name, album_name = await resolve_subject("album", " ".join(rest), target, lastfm)
     info = await lastfm.album_info(artist_name, album_name, target.lastfm_username)
 
@@ -81,7 +81,7 @@ async def album(message: Message, command: CommandObject, lastfm: LastFmClient, 
 
 @router.message(Command("track", "tr", "trackinfo"))
 async def track(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
-    target, rest = await resolve_target(message, (command.args or "").split(), db)
+    target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     artist_name, track_name = await resolve_subject("track", " ".join(rest), target, lastfm)
     info = await lastfm.track_info(artist_name, track_name, target.lastfm_username)
 
@@ -106,7 +106,7 @@ async def track(message: Message, command: CommandObject, lastfm: LastFmClient, 
 async def album_tracks(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
                        stats: Stats) -> None:
     """Track list with the user's plays per track (port of AlbumBuilders.AlbumTracksAsync)."""
-    target, rest = await resolve_target(message, (command.args or "").split(), db)
+    target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     artist_name, album_name = await resolve_subject("album", " ".join(rest), target, lastfm)
     info = await lastfm.album_info(artist_name, album_name)
     tracks = as_list((info.get("tracks") or {}).get("track"))
@@ -140,7 +140,7 @@ async def album_tracks(message: Message, command: CommandObject, lastfm: LastFmC
 @router.message(Command("cover", "co", "albumcover"))
 async def cover(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
     """Full-size album cover (port of AlbumBuilders.CoverAsync)."""
-    target, rest = await resolve_target(message, (command.args or "").split(), db)
+    target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     artist_name, album_name = await resolve_subject("album", " ".join(rest), target, lastfm)
     info = await lastfm.album_info(artist_name, album_name)
     image = pick_image(info.get("image"))

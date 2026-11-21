@@ -205,3 +205,25 @@ async def test_billboard_compares_with_the_previous_window(tmp_path):
         ("Riser", 5, 3), ("Faller", 2, 1), ("Newcomer", 1, 0)]
     await lastfm.close()
     await db.close()
+
+
+async def test_nickname_resolves_to_a_registered_users_index(tmp_path):
+    from types import SimpleNamespace
+
+    from fmbot_tg.context import configure_aliases, resolve_target
+
+    db, lastfm, indexer, user = await _setup(tmp_path, FakeHistory([(100, "A", "B", "C")]))
+    await indexer.run_full_import(user.id)
+    configure_aliases({-100123: {"al": "alice"}})
+    try:
+        message = SimpleNamespace(chat=SimpleNamespace(id=-100123), reply_to_message=None,
+                                  from_user=SimpleNamespace(id=999))
+        target, rest = await resolve_target(message, ["monthly", "Al"], db)
+        assert (target.lastfm_username, target.user_id, target.indexed, rest) == ("alice", user.id, True, ["monthly"])
+        # Unknown Last.fm names still work, just without an index
+        other, _ = await resolve_target(message, ["lfm:stranger"], db)
+        assert (other.lastfm_username, other.user_id) == ("stranger", None)
+    finally:
+        configure_aliases({})
+        await lastfm.close()
+        await db.close()

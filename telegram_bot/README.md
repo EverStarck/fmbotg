@@ -9,13 +9,13 @@ Phases 1, 2 and 3 of the port are done. See [MIGRATION_PLAN.md](MIGRATION_PLAN.m
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
 2. Create a Last.fm API account at https://www.last.fm/api/account/create (no callback URL needed).
-3. Configure and run:
+3. Install [uv](https://docs.astral.sh/uv/), then configure and run:
 
 ```bash
 cd telegram_bot
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-cp .env.example .env   # fill in the values
-.venv/bin/python -m fmbot_tg
+uv sync               # creates .venv with Python 3.12 and all dependencies
+cp .env.example .env  # fill in the values
+uv run fmbot-tg
 ```
 
 Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmbot-data:/data fmbot-tg`
@@ -73,7 +73,7 @@ every couple of hours, and commands that need fresh data (`/whoknows`, range top
 you first. If you edit or delete scrobbles on Last.fm, run `/update full`.
 
 Migrations run automatically at startup (Alembic). To add one after changing `db.py`:
-`DATABASE_URL=... .venv/bin/alembic revision --autogenerate -m "describe change"`.
+`DATABASE_URL=... uv run alembic revision --autogenerate -m "describe change"`.
 
 ## /fm templates
 
@@ -81,6 +81,18 @@ Migrations run automatically at startup (Alembic). To add one after changing `db
 using FMBot's `{{variable}}` names (`{{track.name}}`, `{{artist.plays}}`, `{{discovery.artist-discovered}}`, …).
 `$$title:` lines are bold and `$$footer:` lines italic; lines whose variables are all empty are left out.
 `/settings template` alone lists every variable, `/settings template off` removes it.
+
+## Nicknames
+
+`FM_ALIASES` in `.env` gives people in a group short names that work in every command: with
+`FM_ALIASES='{"-1001234567890": {"alex": "alexlfm"}}'`, `/fm alex`, `/taste alex` or
+`/topartists alex monthly` in that group use the Last.fm user `alexlfm`. If that person connected
+Last.fm to the bot, their imported history is used too.
+
+In commands that also search for music (`/artist`, `/album`, `/artistplays`, `/discovery`, …) only the
+last word counts as a nickname, so `/artistplays radiohead alex` works and `/artist red hot chili peppers`
+still searches for the band even if someone is called "red". Nicknames only work in their own chat.
+They live in `.env` (not committed) so friends' usernames stay private. Restart the bot after changing them.
 
 ## Groups
 
@@ -98,5 +110,5 @@ Elsewhere it looks for common system fonts; set `FONT_PATH` to use a specific `.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest
+uv run pytest
 ```

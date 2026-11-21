@@ -6,7 +6,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from ..context import Target, UserFacingError, resolve_target
+from ..context import STALE_BUTTON, Target, UserFacingError, resolve_target
 from ..db import Database
 from ..formatting import esc, link, num, plural, user_link
 from ..lastfm import TopKind
@@ -99,6 +99,9 @@ async def top_tracks(message: Message, command: CommandObject, stats: Stats, db:
 
 @router.callback_query(TopPage.filter(F.kind.in_(KINDS)))
 async def top_page(query: CallbackQuery, callback_data: TopPage, stats: Stats, db: Database) -> None:
+    if not isinstance(query.message, Message):  # older than 48 hours, or deleted
+        await query.answer(STALE_BUTTON, show_alert=True)
+        return
     period = period_from_key(callback_data.period)
     if period is None:
         await query.answer()

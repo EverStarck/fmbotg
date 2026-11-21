@@ -46,7 +46,7 @@ async def plays(message: Message, command: CommandObject, lastfm: LastFmClient, 
 async def _subject_plays(message: Message, command: CommandObject, kind: str, lastfm: LastFmClient,
                          db: Database, stats: Stats) -> None:
     period, args = parse_period((command.args or "").split(), default=ALL_TIME, edges_only=True)
-    target, rest = await resolve_target(message, args, db)
+    target, rest = await resolve_target(message, args, db, search=True)
     subject = await resolve_subject(kind, " ".join(rest), target, lastfm)
 
     if period != ALL_TIME:
@@ -214,7 +214,7 @@ async def overview_cmd(message: Message, command: CommandObject, db: Database, s
 async def _artist_top(message: Message, command: CommandObject, kind: str, lastfm: LastFmClient, db: Database,
                       stats: Stats) -> None:
     period, args = parse_period((command.args or "").split(), default=ALL_TIME, edges_only=True)
-    target, rest = await resolve_target(message, args, db)
+    target, rest = await resolve_target(message, args, db, search=True)
     (artist,) = await resolve_subject("artist", " ".join(rest), target, lastfm)
     await stats.require_index(target)
     (artist,) = await stats.canonical_subject("artist", (artist,))
@@ -245,7 +245,7 @@ async def artist_albums(message: Message, command: CommandObject, lastfm: LastFm
 async def _discovery(message: Message, command: CommandObject, kind: str, lastfm: LastFmClient, db: Database,
                      stats: Stats) -> None:
     """Port of discoverydate + lastlistened: first and last time you played something."""
-    target, rest = await resolve_target(message, (command.args or "").split(), db)
+    target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     subject = await resolve_subject(kind, " ".join(rest), target, lastfm)
     await stats.require_index(target)
     subject = await stats.canonical_subject(kind, subject)

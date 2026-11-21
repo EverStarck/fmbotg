@@ -15,7 +15,6 @@ from ..templates import TemplateContext, render as render_template
 
 router = Router(name="play")
 
-
 @router.message(Command("fm", "np", "nowplaying"))
 async def now_playing(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
     target, _ = await resolve_target(message, (command.args or "").split(), db)

@@ -91,7 +91,7 @@ async def artist_pace(message: Message, command: CommandObject, lastfm: LastFmCl
                       stats: Stats) -> None:
     """When will you reach N plays on an artist (port of ArtistBuilders.ArtistPaceAsync)."""
     period, args = parse_period((command.args or "").split(), default=ALL_TIME, edges_only=True)
-    target, rest = await resolve_target(message, args, db)
+    target, rest = await resolve_target(message, args, db, search=True)
     await stats.require_index(target)
 
     (artist,) = await stats.canonical_subject("artist", await _artist_for_pace(rest, target, lastfm))
@@ -221,7 +221,7 @@ async def search(message: Message, command: CommandObject, db: Database, stats: 
 async def artist_overview(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
                           stats: Stats) -> None:
     """Everything about you and one artist (port of ArtistBuilders.ArtistOverviewAsync)."""
-    target, rest = await resolve_target(message, (command.args or "").split(), db)
+    target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     subject = await resolve_subject("artist", " ".join(rest), target, lastfm)
     await stats.require_index(target)
     (artist,) = await stats.canonical_subject("artist", subject)
