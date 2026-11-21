@@ -61,6 +61,9 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/crowns`, `/crown`, `/crownleaderboard` | `/cws`, `/cw`, `/cl` | Crowns you hold in a group, one artist's crown history, most crowns |
 | `/crownthreshold`, `/togglecrowns`, `/crownseeder`, `/killcrown` | `/ct`, `/kc` | Group admins: plays needed for a crown, turn crowns off, hand out crowns from imported histories, remove one |
 | `/privacy global\|chat` | | Whether global who knows shows your name |
+| `/topgenres [period]`, `/topcountries [period]` | `/tg`, `/tc` | Your top genres, or where your top artists are from |
+| `/genre [genre or artist]`, `/country [country or artist]` | `/g` | Your top artists in a genre or from a country; with an artist, its genres or country |
+| `/whoknowsgenre`, `/whoknowscountry` | `/wkg`, `/wkc` | Group leaderboard for a genre or country (`/fwkg`, `/fwkc` among your friends) |
 | `/chart [NxM]` | `/c` | Album collage, up to 10x10; `notitles` hides titles, `skip` leaves out albums without a cover |
 
 Periods, with the same aliases as FMBot:
@@ -115,6 +118,15 @@ check Telegram's admin list, so anonymous admins work too.
 
 Global who knows only counts imported histories. People who keep the default `/privacy chat` show
 as "Private user", except to themselves and in groups they're in.
+
+## Genres and countries
+
+Genres are an artist's Last.fm tags, minus tags that aren't genres ("seen live", nationalities,
+decades). Countries come from MusicBrainz, which allows one request per second. Both are saved per
+artist and shared between users, so each artist is looked up once (refreshed after 90 and 180 days).
+A command waits a few seconds for missing artists, answers with what it knows, and keeps looking up
+the rest in the background; the reply says when that happened. Set `MUSICBRAINZ_CONTACT` to a URL or
+email so MusicBrainz can reach you, as they ask.
 
 ## Images
 

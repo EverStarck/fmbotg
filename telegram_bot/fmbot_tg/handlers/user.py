@@ -69,6 +69,11 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /crowns — your crowns here: the artists you have the most plays of (/crown for one artist's history, /crownleaderboard for everyone)
 Admins: /crownthreshold, /togglecrowns, /crownseeder (hand out crowns from imported histories), /killcrown
 
+<b>Genres and countries</b> (genres are Last.fm tags, countries come from MusicBrainz)
+/topgenres /topcountries — your top genres or countries, optionally for a period
+/genre /country — your top artists in a genre or from a country, or an artist's genres or country
+/whoknowsgenre /whoknowscountry — who here listens to it the most (/fwkg, /fwkc among your friends)
+
 <b>Friends</b> (people you follow on Last.fm, plus any you add)
 /friendsfm — what your friends are playing
 /friendwhoknows /fwka /fwkt — who of your friends listens to it the most

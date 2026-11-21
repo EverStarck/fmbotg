@@ -17,6 +17,7 @@ from .db import Database
 from .handlers import all_routers
 from .indexer import Indexer
 from .lastfm import LastFmClient, LastFmError
+from .metadata import Metadata
 from .middleware import TrackMembersMiddleware, membership_router
 from .migrate import upgrade as run_migrations
 from .stats import Stats
@@ -56,6 +57,11 @@ COMMANDS = [
     BotCommand(command="friendwhoknows", description="Who of your friends listens to an artist most"),
     BotCommand(command="friends", description="Your Last.fm follows and added friends"),
     BotCommand(command="addfriend", description="Add a friend, e.g. /addfriend username"),
+    BotCommand(command="topgenres", description="Your top genres, optionally for a period"),
+    BotCommand(command="genre", description="Your top artists in a genre, or an artist's genres"),
+    BotCommand(command="topcountries", description="Where your top artists are from"),
+    BotCommand(command="country", description="Your top artists from a country"),
+    BotCommand(command="whoknowsgenre", description="Who listens to a genre the most here"),
     BotCommand(command="crowns", description="Your crowns in this group"),
     BotCommand(command="crown", description="Who holds the crown for an artist"),
     BotCommand(command="crownleaderboard", description="Who has the most crowns here"),
@@ -80,9 +86,12 @@ async def _reply_error(event: ErrorEvent, text: str) -> None:
         await update.callback_query.answer(text[:200], show_alert=True)
 
 
-def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings, indexer: Indexer) -> Dispatcher:
+def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings, indexer: Indexer,
+                     metadata: Metadata | None = None) -> Dispatcher:
     configure_aliases(settings.fm_aliases)
-    dp = Dispatcher(db=db, lastfm=lastfm, settings=settings, indexer=indexer, stats=Stats(db, lastfm, indexer))
+    metadata = metadata or Metadata(db, lastfm, lastfm.http, settings.user_agent)
+    dp = Dispatcher(db=db, lastfm=lastfm, settings=settings, indexer=indexer, stats=Stats(db, lastfm, indexer),
+                    metadata=metadata)
     dp.message.outer_middleware(TrackMembersMiddleware(db))
     dp.include_router(membership_router)
     for router in all_routers():
@@ -108,12 +117,13 @@ async def run() -> None:
     settings = Settings.from_env()
     db = Database(settings.database_url)
 
-    http = httpx.AsyncClient(timeout=15, headers={"User-Agent": "fmbot-telegram/0.1"})
+    http = httpx.AsyncClient(timeout=15, headers={"User-Agent": settings.user_agent})
     lastfm = LastFmClient(settings.lastfm_api_key, settings.lastfm_api_secret, settings.lastfm_private_key, http)
     bot = Bot(settings.telegram_token,
               default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True))
     indexer = Indexer(db, lastfm, notify=lambda chat_id, text: bot.send_message(chat_id, text))
-    dp = build_dispatcher(db, lastfm, settings, indexer)
+    metadata = Metadata(db, lastfm, http, settings.user_agent)
+    dp = build_dispatcher(db, lastfm, settings, indexer, metadata)
 
     try:
         try:
@@ -126,6 +136,7 @@ async def run() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await indexer.stop()
+        await metadata.close()
         await lastfm.close()
         await db.close()
         await bot.session.close()

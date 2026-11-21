@@ -79,6 +79,21 @@ class ChatSettings(Base):
 DEFAULT_CROWN_THRESHOLD = 30
 
 
+class ArtistMeta(Base):
+    """Genres (Last.fm tags) and country (MusicBrainz) per artist, cached across users
+    (port of the genre and country columns FMBot keeps on its artists table)."""
+
+    __tablename__ = "artist_metadata"
+
+    artist_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    artist: Mapped[str] = mapped_column(String(512))
+    tags: Mapped[str | None] = mapped_column(String(1000))  # "|"-separated genres; "" = looked up, none found
+    tags_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    country_code: Mapped[str | None] = mapped_column(String(8))  # ISO 3166-1; "" = looked up, unknown
+    country: Mapped[str | None] = mapped_column(String(128))
+    country_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Crown(Base):
     """Who has the most plays of an artist in a group (port of FMBot's user_crowns).
 
@@ -720,3 +735,33 @@ class Database:
                 await session.execute(insert(Crown), rows)
             await session.commit()
             return len(rows)
+
+    # --- phase 4: artist genres and countries -------------------------------------------------
+
+    async def artist_meta(self, keys: list[str]) -> dict[str, ArtistMeta]:
+        found: dict[str, ArtistMeta] = {}
+        async with self.sessions() as session:
+            for start in range(0, len(keys), 500):
+                rows = await session.scalars(select(ArtistMeta).where(ArtistMeta.artist_key.in_(keys[start:start + 500])))
+                found.update({row.artist_key: row for row in rows})
+        return found
+
+    async def save_artist_meta(self, artist: str, **values) -> None:
+        """Upsert tags/tags_at or country_code/country/country_at for one artist."""
+        assert set(values) <= {"tags", "tags_at", "country_code", "country", "country_at"}, values
+        for attempt in range(2):
+            async with self.sessions() as session:
+                row = await session.get(ArtistMeta, name_key(artist))
+                if row is None:
+                    row = ArtistMeta(artist_key=name_key(artist), artist=artist[:512])
+                    session.add(row)
+                for key, value in values.items():
+                    setattr(row, key, value)
+                try:
+                    await session.commit()
+                    return
+                except IntegrityError:
+                    # The tag and country lookups for a new artist raced; update the other one's row
+                    await session.rollback()
+                    if attempt:
+                        raise

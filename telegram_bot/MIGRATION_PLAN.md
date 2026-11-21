@@ -90,6 +90,10 @@ Done so far (migration 0006):
   `friendsfm`, friend who knows (`fwk`, `fwka`, `fwkt`)
 - Crowns: claimed and stolen through `/whoknows` with crown history kept, `crowns`, `crown`, `crownleaderboard`;
   admin-only `crownthreshold`, `togglecrowns`, `crownseeder` (from imported histories), `killcrown`
+- Genres and countries (migration 0007, `artist_metadata` cache): `topgenres`, `genre`, `whoknowsgenre`,
+  `fwkgenre`, `topcountries`, `country`, `whoknowscountry`, `fwkcountry`, plus recap's genre and country views.
+  Genres are filtered Last.fm tags (FMBot uses Spotify genres, which need phase 5); countries are from
+  MusicBrainz in a 1 request/second background queue. `countrychart` is a text list, not FMBot's map image.
 
 | C# source | Commands / features |
 |---|---|

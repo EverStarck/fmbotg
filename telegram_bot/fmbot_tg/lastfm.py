@@ -337,6 +337,12 @@ class LastFmClient:
         data = await self.call("artist.getInfo", artist=artist, username=username, autocorrect=1)
         return data["artist"]
 
+    async def artist_tags(self, artist: str) -> list[tuple[str, int]]:
+        """(tag, weight 0-100) for an artist, most used first."""
+        data = await self.call("artist.getTopTags", artist=artist, autocorrect=1)
+        return [(t["name"], _int(t.get("count"))) for t in as_list((data.get("toptags") or {}).get("tag"))
+                if t.get("name")]
+
     async def album_info(self, artist: str, album: str, username: str | None = None) -> dict:
         data = await self.call("album.getInfo", artist=artist, album=album, username=username, autocorrect=1)
         return data["album"]

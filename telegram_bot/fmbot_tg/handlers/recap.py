@@ -15,14 +15,16 @@ from ..context import STALE_BUTTON, Target, UserFacingError, resolve_target
 from ..db import Database
 from ..formatting import TELEGRAM_TEXT_LIMIT, esc, link, num, plural, truncate, user_link
 from ..lastfm import LastFmClient, LastFmError
+from ..metadata import Metadata, by_country, by_genre, flag
 from ..periods import ALL_TIME, YEARLY, Period, parse_period, period_from_key
 from ..stats import Stats
 from .chart import album_chart
 
 router = Router(name="recap")
 
-# RecapPage, minus genres/countries (phase 4) and bot stats (no command log yet)
-VIEWS = {"o": "Overview", "a": "Artists", "b": "Albums", "t": "Tracks", "d": "Discoveries", "c": "Album chart"}
+# RecapPage, minus bot stats (no command log yet)
+VIEWS = {"o": "Overview", "a": "Artists", "b": "Albums", "t": "Tracks", "g": "Genres", "n": "Countries",
+         "d": "Discoveries", "c": "Album chart"}
 KIND_BY_VIEW = {"a": "artists", "b": "albums", "t": "tracks"}
 
 
@@ -47,7 +49,7 @@ async def _new_artists(db: Database, target: Target, period: Period) -> list | N
 
 
 async def render_view(view: str, target: Target, period: Period, lastfm: LastFmClient, db: Database,
-                      stats: Stats) -> str:
+                      stats: Stats, metadata: Metadata) -> str:
     user, label = user_link(target.lastfm_username), esc(period.label)
     header = f"<b>Recap for {user}</b> · {label} · {VIEWS[view]}"
 
@@ -83,6 +85,24 @@ async def render_view(view: str, target: Target, period: Period, lastfm: LastFmC
             lines.append(f"{i}. {link(item.name, item.url)}{by} · <b>{num(item.playcount)}</b>")
         return "\n".join(lines) if result.items else f"{header}\n\nNothing here for this period."
 
+    if view in ("g", "n"):
+        top = await stats.top(target, "artists", period, page=1, page_size=200 if view == "g" else 100)
+        rows = [(item.name, item.playcount) for item in top.items]
+        names = [a for a, _ in rows]
+        lookup = await (metadata.genres(names) if view == "g" else metadata.countries(names, max_new=100))
+        lines = [header, ""]
+        if view == "g":
+            for i, (genre, plays, artists) in enumerate(by_genre(rows, lookup.values)[:12], 1):
+                lines.append(f"{i}. <b>{esc(genre)}</b> · {num(plays)} · <i>{esc(', '.join(artists[:3]))}</i>")
+        else:
+            for i, (code, country, plays, artists) in enumerate(by_country(rows, lookup.values)[:12], 1):
+                lines.append(f"{i}. {flag(code)} <b>{esc(country)}</b> · {num(plays)} · <i>{esc(', '.join(artists[:3]))}</i>")
+        if len(lines) == 2:
+            lines.append("Nothing known yet for this period.")
+        if lookup.pending:
+            lines += ["", f"<i>Still looking up {plural(lookup.pending, 'artist')}; tap again in a minute.</i>"]
+        return "\n".join(lines)
+
     if view == "d":
         new = await _new_artists(db, target, period)
         if new is None:
@@ -102,7 +122,7 @@ def _keyboard(current: str, period: Period, user: str) -> InlineKeyboardMarkup:
                              callback_data=RecapView(view=key, period=period.key, user=user).pack())
         for key, title in VIEWS.items()
     ]
-    return InlineKeyboardMarkup(inline_keyboard=[buttons[:3], buttons[3:]])
+    return InlineKeyboardMarkup(inline_keyboard=[buttons[:4], buttons[4:]])
 
 
 async def _target_for(db: Database, lastfm_username: str) -> Target:
@@ -111,17 +131,18 @@ async def _target_for(db: Database, lastfm_username: str) -> Target:
 
 
 @router.message(Command("recap", "rc"))
-async def recap(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database, stats: Stats) -> None:
+async def recap(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database, stats: Stats,
+                metadata: Metadata) -> None:
     period, args = parse_period((command.args or "").split(), default=YEARLY)
     target, _ = await resolve_target(message, args, db)
-    text = await render_view("o", target, period, lastfm, db, stats)
+    text = await render_view("o", target, period, lastfm, db, stats, metadata)
     await message.reply(truncate(text, TELEGRAM_TEXT_LIMIT),
                         reply_markup=_keyboard("o", period, target.lastfm_username))
 
 
 @router.callback_query(RecapView.filter(F.view.in_(VIEWS)))
 async def recap_view(query: CallbackQuery, callback_data: RecapView, lastfm: LastFmClient, db: Database,
-                     stats: Stats) -> None:
+                     stats: Stats, metadata: Metadata) -> None:
     if not isinstance(query.message, Message):  # older than 48 hours, or deleted
         await query.answer(STALE_BUTTON, show_alert=True)
         return
@@ -142,7 +163,7 @@ async def recap_view(query: CallbackQuery, callback_data: RecapView, lastfm: Las
         )
         return
 
-    text = await render_view(callback_data.view, target, period, lastfm, db, stats)
+    text = await render_view(callback_data.view, target, period, lastfm, db, stats, metadata)
     try:
         await query.message.edit_text(truncate(text, TELEGRAM_TEXT_LIMIT),
                                       reply_markup=_keyboard(callback_data.view, period, target.lastfm_username))
