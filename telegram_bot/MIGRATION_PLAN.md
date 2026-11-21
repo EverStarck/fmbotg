@@ -63,17 +63,18 @@ Done:
 - Artist/album/track plays with periods (`artistplays`, `albumplays`, `trackplays`; periods other than all-time use the index)
 - `artisttracks`, `artistalbums`, `discovery` (discoverydate + lastlistened, artists only), from the index
 - `love`, `unlove`, `loved` (signed POST write calls)
+- `year` (index-based year in review), `discoveries`, `artistpace`, `taste` (overlap of both listening distributions)
+- `albumtracks` (index counts, live fallback capped at 30 tracks), `cover` (original-size image), `scrobble`
+- `discovery` for albums and tracks (`albumdiscovery`, `trackdiscovery`)
 
 Remaining:
 
 | C# source | Commands |
 |---|---|
-| `PlayBuilders` | streaks (saved streak history), year, recap, gaps, search |
-| `ArtistSlashCommands`, `ArtistBuilders` | artistpace, artistoverview, discoveries, taste, affinity, iceberg |
-| `AlbumSlashCommands`, `AlbumBuilders` | albumtracks, cover |
-| `TrackSlashCommands`, `TrackBuilders` | trackdetails, receipt, scrobble (`track.scrobble`) |
-| `discovery` / `lastlistened` | album and track variants |
-| `ChartBuilders`, `ChartService`, `FMBot.Images` | artist charts, skip-empty, billboard/compare mode, time-listened |
+| `PlayBuilders` | streaks (saved streak history), recap, gaps, search |
+| `ArtistSlashCommands`, `ArtistBuilders` | artistoverview, affinity, iceberg |
+| `TrackSlashCommands`, `TrackBuilders` | trackdetails, receipt (image) |
+| `ChartBuilders`, `ChartService`, `FMBot.Images` | skip-empty, billboard/compare mode, time-listened; artist charts wait for Spotify images (phase 5), since Last.fm serves only placeholders |
 | `UserBuilder`, `FmSettingService`, `TemplateService` | `/fm` templates, privacy levels, botscrobbling, featured |
 | `TopSlashCommands` options | billboard, extra large/small, time listened, no-singles, release year filters (`SettingService`) |
 

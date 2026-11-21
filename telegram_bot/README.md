@@ -36,7 +36,13 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/milestone [n\|random]` | `/ms` | Your Nth scrobble |
 | `/overview [days]` | `/ov` | Day-by-day summary, up to 8 days |
 | `/artisttracks`, `/artistalbums` | `/at`, `/aa` | Your top tracks/albums by an artist |
-| `/discovery` | `/dd`, `/ll` | When you first and last played an artist |
+| `/discovery`, `/albumdiscovery`, `/trackdiscovery` | `/dd`, `/abdd`, `/tdd` | When you first and last played something |
+| `/artistpace [goal]` | `/apc` | When you'll reach a play goal on an artist |
+| `/albumtracks`, `/cover` | `/abt`, `/co` | Album track list with your plays; full-size cover |
+| `/year [year]` | `/yr` | Year in review: totals, top lists, new artists |
+| `/discoveries [period]` | `/ds` | Artists you first listened to in a period |
+| `/taste` | `/t` | Compare top artists with someone (reply, `@handle` or `lfm:name`) |
+| `/scrobble Artist - Track` | `/sb` | Scrobble a track now |
 | `/love`, `/unlove`, `/loved` | `/l`, `/ul` | Love tracks on Last.fm, list loved tracks |
 | `/settings`, `/timezone` | `/tz` | Time zone and `/fm` style (`full`/`compact`) |
 | `/topartists`, `/topalbums`, `/toptracks` | `/ta`, `/tab`, `/tt` | Top lists with page buttons |

@@ -74,3 +74,11 @@ def truncate(text: str, limit: int) -> str:
 def ordinal(n: int) -> str:
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{num(n)}{suffix}"
+
+
+def span(days: float) -> str:
+    """'3 days', or '5 hours' / '20 minutes' for spans shorter than a day."""
+    if days >= 1:
+        return plural(round(days), "day")
+    hours = days * 24
+    return plural(round(hours), "hour") if hours >= 1 else plural(max(1, round(hours * 60)), "minute")

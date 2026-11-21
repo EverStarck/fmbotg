@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -281,6 +282,16 @@ class LastFmClient:
     async def love(self, artist: str, track: str, session_key: str, loved: bool = True) -> None:
         await self.call("track.love" if loved else "track.unlove", post=True, artist=artist, track=track,
                         sk=session_key)
+
+    async def scrobble(self, artist: str, track: str, session_key: str, album: str | None = None,
+                       timestamp: int | None = None) -> bool:
+        """Returns False when Last.fm ignored the scrobble (e.g. filtered as spam or a duplicate)."""
+        data = await self.call(
+            "track.scrobble", post=True, retries=0, artist=artist, track=track, album=album,
+            timestamp=timestamp or int(time.time()), sk=session_key,
+        )
+        accepted = ((data.get("scrobbles") or {}).get("@attr") or {}).get("accepted")
+        return _int(accepted) > 0
 
     async def user_info(self, username: str) -> dict:
         return (await self.call("user.getInfo", user=username))["user"]

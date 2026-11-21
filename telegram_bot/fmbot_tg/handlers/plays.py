@@ -9,7 +9,7 @@ from aiogram.types import Message
 
 from ..context import Target, UserFacingError, resolve_subject, resolve_target
 from ..db import Database
-from ..formatting import TELEGRAM_TEXT_LIMIT, ago, esc, link, num, ordinal, plural, truncate, user_link
+from ..formatting import TELEGRAM_TEXT_LIMIT, span, ago, esc, link, num, ordinal, plural, truncate, user_link
 from ..lastfm import LastFmClient
 from ..periods import ALL_TIME, Period, parse_period
 from ..playlogic import goal_amount, milestone_amount, overview
@@ -132,7 +132,7 @@ async def pace(message: Message, command: CommandObject, lastfm: LastFmClient, d
         f"At their current pace, {user_link(target.lastfm_username)} will reach "
         f"<b>{num(goal)}</b> scrobbles on <b>{goal_date:%d %B %Y}</b>.\n"
         f"<i>Based on {per_day:,.1f} scrobbles per day: {num(count)} scrobbles over "
-        f"{plural(round(days), 'day')}{_period_suffix(period)}.</i>"
+        f"{span(days)}{_period_suffix(period)}.</i>"
     )
 
 
@@ -216,20 +216,39 @@ async def artist_albums(message: Message, command: CommandObject, lastfm: LastFm
     await _artist_top(message, command, "albums", lastfm, db, stats)
 
 
-@router.message(Command("discovery", "discoverydate", "lastlistened", "firstlistened", "dd", "ll"))
-async def discovery(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                    stats: Stats) -> None:
-    """Port of discoverydate + lastlistened: first and last time you played an artist."""
+async def _discovery(message: Message, command: CommandObject, kind: str, lastfm: LastFmClient, db: Database,
+                     stats: Stats) -> None:
+    """Port of discoverydate + lastlistened: first and last time you played something."""
     target, rest = await resolve_target(message, (command.args or "").split(), db)
-    (artist,) = await resolve_subject("artist", " ".join(rest), target, lastfm)
+    subject = await resolve_subject(kind, " ".join(rest), target, lastfm)
     await stats.require_index(target)
-    (artist,) = await stats.canonical_subject("artist", (artist,))
-    count, first, last = await db.subject_stats(target.user_id, "artist", (artist,))
+    subject = await stats.canonical_subject(kind, subject)
+    count, first, last = await db.subject_stats(target.user_id, kind, subject)
+    name = " - ".join(subject)
     if not count:
-        raise UserFacingError(f"{user_link(target.lastfm_username)} has never played {esc(artist)}.")
+        raise UserFacingError(f"{user_link(target.lastfm_username)} has never played {esc(name)}.")
+    url = music_url(subject[0], subject[1] if len(subject) > 1 else None, kind + "s")
     await message.reply(
-        f"<b>{link(artist, music_url(artist))}</b> for {user_link(target.lastfm_username)}\n\n"
+        f"<b>{link(name, url)}</b> for {user_link(target.lastfm_username)}\n\n"
         f"Discovered: {_when(first, target)}\n"
         f"Last played: {_when(last, target)}\n"
         f"Plays: <b>{num(count)}</b>"
     )
+
+
+@router.message(Command("discovery", "discoverydate", "lastlistened", "firstlistened", "dd", "ll"))
+async def discovery(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
+                    stats: Stats) -> None:
+    await _discovery(message, command, "artist", lastfm, db, stats)
+
+
+@router.message(Command("albumdiscovery", "abdd", "albumlastlistened"))
+async def album_discovery(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
+                          stats: Stats) -> None:
+    await _discovery(message, command, "album", lastfm, db, stats)
+
+
+@router.message(Command("trackdiscovery", "tdd", "tracklastlistened"))
+async def track_discovery(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
+                          stats: Stats) -> None:
+    await _discovery(message, command, "track", lastfm, db, stats)

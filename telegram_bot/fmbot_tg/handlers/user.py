@@ -41,6 +41,10 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /milestone — your Nth scrobble, e.g. <code>/milestone 10000</code> or <code>random</code>
 /overview — your last few days, day by day
 /love /unlove /loved — love tracks on Last.fm
+/scrobble — scrobble a track, e.g. <code>/scrobble Radiohead - Idioteque</code>
+/year — your year in review, e.g. <code>/year 2023</code>
+/discoveries — artists you discovered in a period
+/taste — compare your taste with someone (reply or <code>@handle</code>)
 
 <b>Top lists</b> (add a period: today, yesterday, 3d, weekly, monthly, quarterly, half, yearly, 2y, alltime or a year like 2019)
 /topartists /topalbums /toptracks
@@ -49,7 +53,9 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /artist /album /track — e.g. <code>/album Radiohead - OK Computer</code>
 /artistplays /albumplays /trackplays — your plays, optionally for a period
 /artisttracks /artistalbums — your top tracks and albums by an artist
-/discovery — when you first and last listened to an artist
+/artistpace — when you'll reach a play goal on an artist
+/albumtracks /cover — an album's track list with your plays, and its cover
+/discovery /albumdiscovery /trackdiscovery — when you first and last listened to something
 
 <b>Groups</b>
 /whoknows /whoknowsalbum /whoknowstrack — who listens to it the most here

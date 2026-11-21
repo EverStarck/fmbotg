@@ -86,3 +86,9 @@ async def test_whoknows_members_only_include_linked_users_in_that_chat(tmp_path)
     assert await db.chat_lastfm_users(-100, limit=10) == []
     assert (await db.get_user_by_handle("@Carol")).lastfm_username == "carol_lfm"
     await db.close()
+
+
+def test_cover_url_drops_the_size_segment():
+    from fmbot_tg.handlers.info import full_size_image
+    url = "https://lastfm.freetls.fastly.net/i/u/300x300/abc.jpg"
+    assert full_size_image(url) == "https://lastfm.freetls.fastly.net/i/u/abc.jpg"

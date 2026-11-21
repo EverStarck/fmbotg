@@ -11,7 +11,7 @@ from aiogram.types import Message
 from ..context import NOT_REGISTERED_SELF, NotRegistered, Target, UserFacingError, resolve_subject, resolve_target
 from ..db import Database
 from ..formatting import TELEGRAM_TEXT_LIMIT, ago, esc, link, plural, truncate, user_link
-from ..lastfm import LastFmClient
+from ..lastfm import LastFmClient, LastFmError
 
 router = Router(name="settings")
 FM_MODES = ("full", "compact")
@@ -120,3 +120,24 @@ async def loved_tracks(message: Message, command: CommandObject, lastfm: LastFmC
                      + (f" <i>· {ago(track.timestamp)}</i>" if track.timestamp else ""))
     lines += ["", f"<code>{plural(result.total, 'loved track')}</code>"]
     await message.reply(truncate("\n".join(lines), TELEGRAM_TEXT_LIMIT))
+
+
+@router.message(Command("scrobble", "sb"))
+async def scrobble(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
+    """Scrobble a track now (port of TrackBuilders.ScrobbleAsync). Format: Artist - Track."""
+    target = await _self(message, db)
+    query = (command.args or "").strip()
+    if not query:
+        raise UserFacingError("Add a track, e.g. <code>/scrobble Radiohead - Idioteque</code>.")
+    artist, track = await resolve_subject("track", query, target, lastfm)
+    try:
+        info = await lastfm.track_info(artist, track)
+        artist = (info.get("artist") or {}).get("name", artist)
+        track = info.get("name", track)
+        album = (info.get("album") or {}).get("title")
+    except LastFmError:
+        album = None  # unknown to Last.fm; scrobble it as typed
+    if not await lastfm.scrobble(artist, track, target.session_key, album=album):
+        raise UserFacingError("Last.fm ignored that scrobble.")
+    await message.reply(f"Scrobbled <b>{esc(track)}</b> by <b>{esc(artist)}</b>"
+                        + (f" from <i>{esc(album)}</i>" if album else "") + ".")

@@ -155,3 +155,29 @@ def overview(plays: Iterable[Play], tz: tzinfo) -> list[DayOverview]:
             top_track=_top(b["t"], {k: names[("t", k)] for k in b["t"]}),
         ))
     return result
+
+
+@dataclass(frozen=True)
+class TasteMatch:
+    shared: list[tuple[str, int, int]]  # (name, plays for a, plays for b), most shared first
+    similarity: float  # 0-100
+
+
+def taste(a: list[tuple[str, int]], b: list[tuple[str, int]]) -> TasteMatch:
+    """Compare two top artist lists (port of FMBot's taste command).
+
+    Similarity is the overlap of both listening distributions: the sum over shared artists of the
+    smaller of each user's share of plays. 100 means identical proportions, 0 nothing in common.
+    """
+    total_a = sum(count for _, count in a) or 1
+    total_b = sum(count for _, count in b) or 1
+    b_by_key = {name_key(name): count for name, count in b}
+    shared = []
+    overlap = 0.0
+    for name, count_a in a:
+        count_b = b_by_key.get(name_key(name))
+        if count_b:
+            shared.append((name, count_a, count_b))
+            overlap += min(count_a / total_a, count_b / total_b)
+    shared.sort(key=lambda row: (-min(row[1] / total_a, row[2] / total_b), row[0].lower()))
+    return TasteMatch(shared, round(overlap * 100, 1))

@@ -116,3 +116,17 @@ def test_phase1_database_is_stamped_then_upgraded(tmp_path):
     asyncio.run(create_phase1_tables())
     upgrade(url)  # must not fail with "table users already exists"
     upgrade(url)  # and is idempotent
+
+
+async def test_discoveries_only_include_artists_first_played_in_the_range(tmp_path):
+    history = FakeHistory([(100, "Old", "A", "x"), (500, "Old", "A", "y"), (600, "New", "B", "z"),
+                           (700, "new", "B", "z"), (800, "Newer", "C", "w")])
+    db, lastfm, indexer, user = await _setup(tmp_path, history)
+    await indexer.run_full_import(user.id)
+
+    rows = await db.discoveries(user.id, 400, 1000)
+    assert [(a.lower(), first, plays) for a, first, plays in rows] == [("new", 600, 2), ("newer", 800, 1)]
+    assert await db.count_plays(user.id, 400, 1000) == 4
+    assert await db.track_counts(user.id, "NEW", ["Z", "missing"]) == {"z": 2}
+    await lastfm.close()
+    await db.close()

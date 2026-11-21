@@ -358,3 +358,37 @@ class Database:
                 .order_by(UserPlay.played_at)
             )
             return list(rows)
+
+    async def count_plays(self, user_id: int, from_ts: int, to_ts: int) -> int:
+        async with self.sessions() as session:
+            return await session.scalar(
+                select(func.count()).where(UserPlay.user_id == user_id, UserPlay.played_at >= from_ts,
+                                           UserPlay.played_at < to_ts)
+            ) or 0
+
+    async def discoveries(self, user_id: int, from_ts: int, to_ts: int, limit: int = 1000) -> list[tuple[str, int, int]]:
+        """Artists first played in [from_ts, to_ts): (artist, first play, all-time plays), most played first."""
+        first = func.min(UserPlay.played_at)
+        plays = func.count().label("plays")
+        stmt = (
+            select(func.max(UserPlay.artist), first, plays)
+            .where(UserPlay.user_id == user_id)
+            .group_by(UserPlay.artist_key)
+            .having(first >= from_ts, first < to_ts)
+            .order_by(plays.desc(), first)
+            .limit(limit)
+        )
+        async with self.sessions() as session:
+            return [(artist, ts, count) for artist, ts, count in await session.execute(stmt)]
+
+    async def track_counts(self, user_id: int, artist: str, tracks: list[str]) -> dict[str, int]:
+        """Plays per track name (match key) for one artist, regardless of album."""
+        keys = [name_key(t) for t in tracks]
+        async with self.sessions() as session:
+            rows = await session.execute(
+                select(UserPlay.track_key, func.count())
+                .where(UserPlay.user_id == user_id, UserPlay.artist_key == name_key(artist),
+                       UserPlay.track_key.in_(keys))
+                .group_by(UserPlay.track_key)
+            )
+            return {key: count for key, count in rows}

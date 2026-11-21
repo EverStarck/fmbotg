@@ -2,7 +2,7 @@ from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from fmbot_tg.periods import ALL_TIME, MONTHLY, TODAY, YESTERDAY, parse_period
-from fmbot_tg.playlogic import Play, Streak, goal_amount, milestone_amount, overview
+from fmbot_tg.playlogic import Play, Streak, goal_amount, milestone_amount, overview, taste
 
 
 def test_goal_defaults_to_next_breakpoint_and_accepts_k_suffix():
@@ -65,3 +65,13 @@ def test_period_in_a_search_only_counts_at_the_edges():
         (ALL_TIME, ["Beatles", "-", "Yesterday"])
     assert parse_period("Radiohead monthly".split(), ALL_TIME, edges_only=True) == (MONTHLY, ["Radiohead"])
     assert parse_period("The Month Of May".split(), ALL_TIME, edges_only=True)[0] == ALL_TIME
+
+
+def test_taste_overlap_is_symmetric_and_case_insensitive():
+    a = [("Radiohead", 50), ("Björk", 50)]
+    b = [("radiohead", 10), ("Muse", 90)]
+    ab, ba = taste(a, b), taste(b, a)
+    assert ab.similarity == ba.similarity == 10.0
+    assert ab.shared == [("Radiohead", 50, 10)]
+    assert taste(a, a).similarity == 100.0
+    assert taste(a, []).similarity == 0.0
