@@ -41,6 +41,9 @@ class User(Base):
     # Last import or update attempt, successful or not.
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_scrobble_ts: Mapped[int | None] = mapped_column(BigInteger)
+    # Settings (port of the user settings FMBot keeps on its users table)
+    timezone: Mapped[str | None] = mapped_column(String(64))  # IANA name, None = UTC
+    fm_mode: Mapped[str | None] = mapped_column(String(16))  # "full" (default) or "compact"
 
 
 class ChatMember(Base):
@@ -172,6 +175,13 @@ class Database:
         user.updated_at = None
         user.last_scrobble_ts = None
 
+    async def update_settings(self, telegram_id: int, **values) -> None:
+        allowed = {"timezone", "fm_mode"}
+        assert set(values) <= allowed, values
+        async with self.sessions() as session:
+            await session.execute(update(User).where(User.telegram_id == telegram_id).values(**values))
+            await session.commit()
+
     async def touch(self, telegram_id: int, handle: str | None, display_name: str, chat_id: int | None) -> None:
         """Record that a Telegram user was seen, optionally in a group chat."""
         async with self.sessions() as session:
@@ -275,11 +285,7 @@ class Database:
         """Per-user playcount for an artist, album or track among `user_ids` (who knows)."""
         if not user_ids:
             return {}
-        conditions = [UserPlay.artist_key == name_key(subject[0]), UserPlay.user_id.in_(user_ids)]
-        if kind == "album":
-            conditions.append(UserPlay.album_key == name_key(subject[1]))
-        elif kind == "track":
-            conditions.append(UserPlay.track_key == name_key(subject[1]))
+        conditions = [UserPlay.user_id.in_(user_ids), *self._subject_conditions(kind, subject)]
         async with self.sessions() as session:
             rows = await session.execute(
                 select(UserPlay.user_id, func.count()).where(*conditions).group_by(UserPlay.user_id)
@@ -287,7 +293,7 @@ class Database:
             return {user_id: count for user_id, count in rows}
 
     async def top_from_plays(self, user_id: int, kind: str, from_ts: int, to_ts: int,
-                             limit: int = 1000) -> list[AggregateRow]:
+                             limit: int = 1000, artist: str | None = None) -> list[AggregateRow]:
         """Top artists/albums/tracks in [from_ts, to_ts). Names are matched case-insensitively."""
         key_columns = {
             "artists": [UserPlay.artist_key],
@@ -298,6 +304,8 @@ class Database:
         conditions = [UserPlay.user_id == user_id, UserPlay.played_at >= from_ts, UserPlay.played_at < to_ts]
         if kind == "albums":
             conditions.append(UserPlay.album_key.is_not(None))
+        if artist is not None:
+            conditions.append(UserPlay.artist_key == name_key(artist))
 
         playcount = func.count().label("playcount")
         stmt = (
@@ -311,3 +319,42 @@ class Database:
             rows = await session.execute(stmt)
             return [AggregateRow(name, artist if kind != "artists" else None, count)
                     for name, artist, count in rows]
+
+    def _subject_conditions(self, kind: str, subject: tuple[str, ...]) -> list:
+        conditions = [UserPlay.artist_key == name_key(subject[0])]
+        if kind == "album":
+            conditions.append(UserPlay.album_key == name_key(subject[1]))
+        elif kind == "track":
+            conditions.append(UserPlay.track_key == name_key(subject[1]))
+        return conditions
+
+    async def subject_stats(self, user_id: int, kind: str, subject: tuple[str, ...],
+                            from_ts: int = 0, to_ts: int = 2**62) -> tuple[int, int | None, int | None]:
+        """(playcount, first play, last play) of an artist/album/track for one user."""
+        stmt = select(func.count(), func.min(UserPlay.played_at), func.max(UserPlay.played_at)).where(
+            UserPlay.user_id == user_id, UserPlay.played_at >= from_ts, UserPlay.played_at < to_ts,
+            *self._subject_conditions(kind, subject),
+        )
+        async with self.sessions() as session:
+            count, first, last = (await session.execute(stmt)).one()
+            return count, first, last
+
+    async def recent_plays(self, user_id: int, before_ts: int, limit: int) -> list[UserPlay]:
+        """Newest first, strictly before `before_ts`."""
+        async with self.sessions() as session:
+            rows = await session.scalars(
+                select(UserPlay)
+                .where(UserPlay.user_id == user_id, UserPlay.played_at < before_ts)
+                .order_by(UserPlay.played_at.desc(), UserPlay.id.desc())
+                .limit(limit)
+            )
+            return list(rows)
+
+    async def plays_between(self, user_id: int, from_ts: int, to_ts: int) -> list[UserPlay]:
+        async with self.sessions() as session:
+            rows = await session.scalars(
+                select(UserPlay)
+                .where(UserPlay.user_id == user_id, UserPlay.played_at >= from_ts, UserPlay.played_at < to_ts)
+                .order_by(UserPlay.played_at)
+            )
+            return list(rows)

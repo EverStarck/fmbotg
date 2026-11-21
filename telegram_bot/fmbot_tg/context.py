@@ -5,7 +5,9 @@ caller by default, the author of the replied-to message, an @handle of a registe
 or a raw Last.fm name written as `lfm:name`.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import timezone, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiogram.types import Message
 
@@ -34,12 +36,28 @@ class Target:
     is_self: bool
     user_id: int | None = None  # set for registered users
     indexed: bool = False  # full scrobble history is in the play index
+    tz: tzinfo = field(default=timezone.utc)
+    fm_mode: str = "full"
+
+    @classmethod
+    def from_user(cls, user: User, is_self: bool) -> "Target":
+        return cls(user.lastfm_username, user.session_key, is_self, user.id, user.indexed_at is not None,
+                   load_timezone(user.timezone), user.fm_mode or "full")
+
+
+def load_timezone(name: str | None) -> tzinfo:
+    if not name:
+        return timezone.utc
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return timezone.utc
 
 
 def _target_from_user(user: User | None, is_self: bool, who: str) -> Target:
     if user is None or not user.lastfm_username:
         raise NotRegistered(NOT_REGISTERED_SELF if is_self else f"{who} hasn't connected Last.fm to this bot.")
-    return Target(user.lastfm_username, user.session_key, is_self, user.id, user.indexed_at is not None)
+    return Target.from_user(user, is_self)
 
 
 async def resolve_target(message: Message, args: list[str], db: Database) -> tuple[Target, list[str]]:

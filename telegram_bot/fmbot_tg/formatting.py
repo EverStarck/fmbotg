@@ -69,3 +69,8 @@ def truncate(text: str, limit: int) -> str:
         return text
     cut = text[: limit - 1].rsplit("\n", 1)[0]
     return cut + "\n…"
+
+
+def ordinal(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{num(n)}{suffix}"

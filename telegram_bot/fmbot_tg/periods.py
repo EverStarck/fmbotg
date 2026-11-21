@@ -2,12 +2,12 @@
 
 Periods either map onto a Last.fm `period` (weekly … all-time) or are a time range that is
 answered from the play index (today, 2-day, two-year, a calendar year …).
-Calendar boundaries are UTC until per-user time zones exist.
+Calendar boundaries (today, yesterday, years) follow the user's time zone setting.
 """
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 
 FIRST_SCROBBLE_YEAR = 2002
 
@@ -25,17 +25,18 @@ class Period:
     def is_range(self) -> bool:
         return self.api is None
 
-    def bounds(self, now: datetime | None = None) -> tuple[int, int]:
-        """(from, to) unix timestamps, `to` exclusive."""
-        now = now or datetime.now(timezone.utc)
+    def bounds(self, now: datetime | None = None, tz: tzinfo | None = None) -> tuple[int, int]:
+        """(from, to) unix timestamps, `to` exclusive. Calendar periods use `tz` (default UTC)."""
+        tz = tz or timezone.utc
+        now = (now or datetime.now(timezone.utc)).astimezone(tz)
         midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         if self.calendar == "today":
             start, end = midnight, now
         elif self.calendar == "yesterday":
             start, end = midnight - timedelta(days=1), midnight
         elif self.year is not None:
-            start = datetime(self.year, 1, 1, tzinfo=timezone.utc)
-            end = min(datetime(self.year + 1, 1, 1, tzinfo=timezone.utc), now)
+            start = datetime(self.year, 1, 1, tzinfo=tz)
+            end = min(datetime(self.year + 1, 1, 1, tzinfo=tz), now)
         elif self.days is not None:
             start, end = now - timedelta(days=self.days), now
         else:
@@ -43,15 +44,15 @@ class Period:
         return int(start.timestamp()), int(end.timestamp())
 
 
-WEEKLY = Period("w", "weekly", api="7day")
-MONTHLY = Period("m", "monthly", api="1month")
-QUARTERLY = Period("q", "quarterly", api="3month")
-HALF = Period("h", "half-yearly", api="6month")
-YEARLY = Period("y", "yearly", api="12month")
+WEEKLY = Period("w", "weekly", api="7day", days=7)
+MONTHLY = Period("m", "monthly", api="1month", days=30)
+QUARTERLY = Period("q", "quarterly", api="3month", days=90)
+HALF = Period("h", "half-yearly", api="6month", days=180)
+YEARLY = Period("y", "yearly", api="12month", days=365)
 ALL_TIME = Period("o", "all-time", api="overall")
 
-TODAY = Period("d", "today (UTC)", calendar="today")
-YESTERDAY = Period("yd", "yesterday (UTC)", calendar="yesterday")
+TODAY = Period("d", "today", calendar="today")
+YESTERDAY = Period("yd", "yesterday", calendar="yesterday")
 ONE_DAY = Period("1", "last 24 hours", days=1)
 TWO_YEAR = Period("2y", "two-year", days=730)
 ROLLING_DAYS = {n: Period(str(n), f"{n}-day", days=n) for n in range(2, 7)}
@@ -102,9 +103,19 @@ def period_from_key(key: str) -> Period | None:
     return _parse_year(key) if key.startswith("y") else None
 
 
-def parse_period(args: list[str], default: Period = WEEKLY) -> tuple[Period, list[str]]:
-    """Pulls the first period word out of `args`. Returns (period, remaining args)."""
-    for index, raw in enumerate(args):
+def parse_period(args: list[str], default: Period = WEEKLY, edges_only: bool = False) -> tuple[Period, list[str]]:
+    """Pulls the first period word out of `args`. Returns (period, remaining args).
+
+    `edges_only` only looks at the first and last word, for commands that also take a search
+    (so "/trackplays Beatles - Yesterday" keeps "Yesterday" as the title).
+    """
+    indexes = list(range(len(args)))
+    if edges_only:
+        indexes = sorted({0, len(args) - 1}) if args else []
+        if len(args) >= 2 and args[-2] == "-":
+            indexes.remove(len(args) - 1)  # it's the title right after "Artist -"
+    for index in indexes:
+        raw = args[index]
         word = raw.lower()
         period = _ALIASES.get(word) or _parse_year(word)
         if period:

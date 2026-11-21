@@ -198,7 +198,9 @@ class LastFmClient:
     def auth_url(self, token: str) -> str:
         return f"{AUTH_URL}?api_key={self.api_key}&token={token}"
 
-    async def call(self, method: str, *, signed: bool = False, retries: int = 2, **params: Any) -> dict:
+    async def call(self, method: str, *, signed: bool = False, retries: int = 2, post: bool = False,
+                   **params: Any) -> dict:
+        """`post=True` for write methods (track.love etc.), which Last.fm only accepts as POST."""
         query = {key: str(value) for key, value in params.items() if value is not None}
         signed = signed or "sk" in query
         query["method"] = method
@@ -213,7 +215,10 @@ class LastFmClient:
                 await asyncio.sleep(0.6 * attempt)
             try:
                 async with self._sem:
-                    response = await self._http.get(API_URL, params=query)
+                    if post:
+                        response = await self._http.post(API_URL, data=query)
+                    else:
+                        response = await self._http.get(API_URL, params=query)
             except httpx.HTTPError as exc:
                 log.warning("Last.fm %s transport error: %s", method, exc)
                 last_error = LastFmError(-1, "Could not reach Last.fm")
@@ -253,6 +258,29 @@ class LastFmClient:
         return session["name"], session["key"]
 
     # --- user ---------------------------------------------------------------------------
+
+    async def scrobble_count(self, username: str, from_ts: int | None = None, to_ts: int | None = None,
+                             session_key: str | None = None) -> int:
+        """Scrobbles in a time range, read from the `total` of a one-item recent tracks page."""
+        result = await self.recent_tracks(username, limit=1, session_key=session_key, from_ts=from_ts, to_ts=to_ts,
+                                          extended=False)
+        return result.total
+
+    async def scrobble_at(self, username: str, number: int, total: int,
+                          session_key: str | None = None) -> Scrobble | None:
+        """The `number`th scrobble ever (1-based), given the current total (port of GetMilestoneScrobbleAsync)."""
+        result = await self.recent_tracks(username, limit=1, session_key=session_key, page=total - number + 1)
+        scrobbles = [s for s in result.tracks if s.timestamp]
+        return scrobbles[-1] if scrobbles else None
+
+    async def loved_tracks(self, username: str, limit: int = 10, page: int = 1) -> RecentTracks:
+        data = await self.call("user.getLovedTracks", user=username, limit=limit, page=page)
+        root = data.get("lovedtracks") or {}
+        return parse_recent_tracks({"recenttracks": root})
+
+    async def love(self, artist: str, track: str, session_key: str, loved: bool = True) -> None:
+        await self.call("track.love" if loved else "track.unlove", post=True, artist=artist, track=track,
+                        sk=session_key)
 
     async def user_info(self, username: str) -> dict:
         return (await self.call("user.getInfo", user=username))["user"]

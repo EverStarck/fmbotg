@@ -26,6 +26,14 @@ async def now_playing(message: Message, command: CommandObject, lastfm: LastFmCl
     current = recent.tracks[0]
     previous = recent.tracks[1] if len(recent.tracks) > 1 else None
 
+    if target.fm_mode == "compact":
+        # Port of FMBot's small embed mode: one line, no cover
+        track_plays = await lastfm.user_playcount("track", (current.artist, current.track), user)
+        icon = "🎧" if current.now_playing else "⏮"
+        await message.reply(f"{icon} <b>{link(current.track, current.url)}</b> — {esc(current.artist)}"
+                            f" · {user_link(user)} · {plural(track_plays, 'play')}")
+        return
+
     track_plays, artist_plays = await asyncio.gather(
         lastfm.user_playcount("track", (current.artist, current.track), user),
         lastfm.user_playcount("artist", (current.artist,), user),

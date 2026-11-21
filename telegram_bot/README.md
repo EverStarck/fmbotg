@@ -3,7 +3,7 @@
 A Python port of FMBot that runs on Telegram instead of Discord. It uses
 [aiogram 3](https://docs.aiogram.dev), httpx, SQLAlchemy 2 (async) and Pillow.
 
-Phases 1 and 2 of the port are done. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
+Phases 1 and 2 of the port are done, and phase 3 is partly done. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
 
 ## Setup
 
@@ -29,6 +29,16 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/recent [n]` | `/rt` | Latest scrobbles |
 | `/profile` | `/stats`, `/me` | Last.fm profile stats and history import status |
 | `/update [full]` | `/index` | Fetch new scrobbles; `full` re-imports your whole history |
+| `/plays [period]` | `/p` | Scrobble count |
+| `/artistplays`, `/albumplays`, `/trackplays` | `/ap`, `/abp`, `/tp` | Your plays on something, optionally for a period |
+| `/streak` | `/str` | Current artist/album/track streak |
+| `/pace [goal] [period]` | `/pc` | When you'll reach a scrobble goal |
+| `/milestone [n\|random]` | `/ms` | Your Nth scrobble |
+| `/overview [days]` | `/ov` | Day-by-day summary, up to 8 days |
+| `/artisttracks`, `/artistalbums` | `/at`, `/aa` | Your top tracks/albums by an artist |
+| `/discovery` | `/dd`, `/ll` | When you first and last played an artist |
+| `/love`, `/unlove`, `/loved` | `/l`, `/ul` | Love tracks on Last.fm, list loved tracks |
+| `/settings`, `/timezone` | `/tz` | Time zone and `/fm` style (`full`/`compact`) |
 | `/topartists`, `/topalbums`, `/toptracks` | `/ta`, `/tab`, `/tt` | Top lists with page buttons |
 | `/artist`, `/album`, `/track` | `/a`, `/ab`, `/tr` | Info and your plays; defaults to what you're playing |
 | `/whoknows`, `/whoknowsalbum`, `/whoknowstrack` | `/wk`, `/wka`, `/wkt` | Group leaderboard for an artist, album or track |
@@ -37,7 +47,8 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 Periods, with the same aliases as FMBot:
 - From Last.fm directly: `weekly` (default), `monthly`, `quarterly`, `half`, `yearly`, `alltime`
 - From your imported history: `today`, `yesterday`, `1d` … `6d`, `2y`, or a year like `2019`.
-  Ranges up to 8 days also work live for people without an imported history. Calendar days are UTC.
+  Ranges up to 8 days also work live for people without an imported history. Calendar days and years
+  follow your `/timezone` (UTC by default).
 
 Targeting someone else: reply to their message, or add `@handle` (if they've used the bot)
 or `lfm:username` (any Last.fm user).

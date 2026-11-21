@@ -30,16 +30,26 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /logout — disconnect it
 /profile — your Last.fm profile stats
 /update — fetch new scrobbles (<code>/update full</code> re-imports everything)
+/settings — time zone and /fm style
 
 <b>Listening</b>
 /fm — what you're playing now
 /recent — your latest scrobbles
+/plays — scrobble count, optionally for a period
+/streak — how many times in a row you've played the current artist, album and track
+/pace — when you'll reach a scrobble goal, e.g. <code>/pace 100k</code>
+/milestone — your Nth scrobble, e.g. <code>/milestone 10000</code> or <code>random</code>
+/overview — your last few days, day by day
+/love /unlove /loved — love tracks on Last.fm
 
 <b>Top lists</b> (add a period: today, yesterday, 3d, weekly, monthly, quarterly, half, yearly, 2y, alltime or a year like 2019)
 /topartists /topalbums /toptracks
 
 <b>Info</b> (defaults to what you're playing)
 /artist /album /track — e.g. <code>/album Radiohead - OK Computer</code>
+/artistplays /albumplays /trackplays — your plays, optionally for a period
+/artisttracks /artistalbums — your top tracks and albums by an artist
+/discovery — when you first and last listened to an artist
 
 <b>Groups</b>
 /whoknows /whoknowsalbum /whoknowstrack — who listens to it the most here

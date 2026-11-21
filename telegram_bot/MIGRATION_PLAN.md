@@ -51,21 +51,30 @@ Known limitations, still open:
   to 8 days also work live for unindexed users. `/chart` supports them, looking covers up through `album.getInfo`
 
 Deferred from phase 2:
-- Per-user time zones (calendar periods are UTC). Comes with the phase 3 settings command.
 - `user_artists`/`user_albums`/`user_tracks` aggregate tables. FMBot keeps them so all-time counts match
   Last.fm's own totals; here aggregates are computed from `user_plays`, which is fine until it gets slow.
 - Moving the indexer to separate worker processes (arq + Redis) when one process is no longer enough.
 
-## Phase 3: Last.fm command parity
+## Phase 3: Last.fm command parity (in progress)
+
+Done:
+- Settings (migration 0003): `/settings`, `/timezone` (IANA names; calendar periods and overviews use it), `/fm` compact mode
+- `PlayBuilders`: plays, streak (live page, then continued from the index), pace, milestone (incl. random), overview
+- Artist/album/track plays with periods (`artistplays`, `albumplays`, `trackplays`; periods other than all-time use the index)
+- `artisttracks`, `artistalbums`, `discovery` (discoverydate + lastlistened, artists only), from the index
+- `love`, `unlove`, `loved` (signed POST write calls)
+
+Remaining:
 
 | C# source | Commands |
 |---|---|
-| `PlaySlashCommands`, `PlayBuilders` | plays, streak/streaks, overview, pace, milestone, year, recap, gaps, discoverydate, lastlistened, search |
-| `ArtistSlashCommands`, `ArtistBuilders` | artistplays, artisttracks, artistalbums, artistpace, artistoverview, discoveries, taste, affinity, iceberg |
-| `AlbumSlashCommands`, `AlbumBuilders` | albumplays, albumtracks, cover |
-| `TrackSlashCommands`, `TrackBuilders` | trackplays, trackdetails, love/unlove (signed `track.love`), loved, receipt, scrobble (`track.scrobble`) |
+| `PlayBuilders` | streaks (saved streak history), year, recap, gaps, search |
+| `ArtistSlashCommands`, `ArtistBuilders` | artistpace, artistoverview, discoveries, taste, affinity, iceberg |
+| `AlbumSlashCommands`, `AlbumBuilders` | albumtracks, cover |
+| `TrackSlashCommands`, `TrackBuilders` | trackdetails, receipt, scrobble (`track.scrobble`) |
+| `discovery` / `lastlistened` | album and track variants |
 | `ChartBuilders`, `ChartService`, `FMBot.Images` | artist charts, skip-empty, billboard/compare mode, time-listened |
-| `UserSlashCommands`, `UserBuilder`, `FmSettingService`, `TemplateService` | settings, `/fm` modes and templates, privacy, botscrobbling, featured |
+| `UserBuilder`, `FmSettingService`, `TemplateService` | `/fm` templates, privacy levels, botscrobbling, featured |
 | `TopSlashCommands` options | billboard, extra large/small, time listened, no-singles, release year filters (`SettingService`) |
 
 ## Phase 4: social and group features

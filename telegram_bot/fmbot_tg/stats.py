@@ -11,6 +11,7 @@ from .formatting import esc
 from .indexer import PAGE_SIZE, Indexer
 from .lastfm import LastFmClient, LastFmError, TopItem, TopKind, TopList, pick_image
 from .periods import Period
+from .playlogic import Play, Streak
 
 # Without an index, ranges are fetched live from Last.fm; cap it so one command can't
 # page through someone's entire history.
@@ -68,12 +69,12 @@ class Stats:
         return TopList(items=items, total=len(rows), page=page, total_pages=total_pages)
 
     async def _range_rows(self, target: Target, kind: TopKind, period: Period) -> list[AggregateRow]:
-        cache_key = (target.lastfm_username.lower(), kind, period.key)
+        cache_key = (target.lastfm_username.lower(), kind, period.key, str(target.tz))
         cached = self._ranges.get(cache_key)
         if cached is not None:
             return cached
 
-        from_ts, to_ts = period.bounds()
+        from_ts, to_ts = period.bounds(tz=target.tz)
         if target.user_id is not None and target.indexed:
             await self._indexer.update(target.user_id)
             rows = await self._db.top_from_plays(target.user_id, kind, from_ts, to_ts)
@@ -85,22 +86,68 @@ class Stats:
                 "It's imported automatically after /login; /update starts it manually."
             )
         else:
-            rows = aggregate(await self._live_plays(target, from_ts, to_ts), kind)
+            plays = await self._live_plays(target, from_ts, to_ts)
+            rows = aggregate([(p.artist, p.album, p.track) for p in plays], kind)
 
         self._ranges.set(cache_key, rows)
         return rows
 
-    async def _live_plays(self, target: Target, from_ts: int, to_ts: int) -> list[tuple[str, str | None, str]]:
+    async def _live_plays(self, target: Target, from_ts: int, to_ts: int) -> list[Play]:
         plays = []
         for page in range(1, MAX_LIVE_PAGES + 1):
             result = await self._lastfm.recent_tracks(
                 target.lastfm_username, limit=PAGE_SIZE, session_key=target.session_key,
                 page=page, from_ts=from_ts, to_ts=to_ts, extended=False,
             )
-            plays += [(s.artist, s.album or None, s.track) for s in result.tracks if s.timestamp]
+            plays += [Play(s.timestamp, s.artist, s.album or None, s.track) for s in result.tracks if s.timestamp]
             if page >= result.total_pages:
                 return plays
         raise UserFacingError("That's too many scrobbles to count live. Connect with /login to import your history.")
+
+    async def require_index(self, target: Target) -> None:
+        """Raise a helpful error unless the target's history is imported; otherwise bring it up to date."""
+        if target.user_id is None:
+            raise UserFacingError("This needs an imported scrobble history, which only works for people "
+                                  "who connected Last.fm to this bot.")
+        if self._indexer.is_importing(target.user_id):
+            raise UserFacingError("The scrobble history is still being imported. Try again in a bit.")
+        if not target.indexed:
+            raise UserFacingError("This needs an imported scrobble history. Run /update to import it.")
+        await self._indexer.update(target.user_id)
+
+    async def plays_window(self, target: Target, from_ts: int, to_ts: int) -> list[Play]:
+        """Plays in [from_ts, to_ts), oldest first: from the index, or live for short windows."""
+        if target.indexed and target.user_id is not None:
+            await self._indexer.update(target.user_id)
+            rows = await self._db.plays_between(target.user_id, from_ts, to_ts)
+            return [Play(r.played_at, r.artist, r.album, r.track) for r in rows]
+        if to_ts - from_ts > MAX_LIVE_RANGE_SECONDS:
+            await self.require_index(target)
+        return sorted(await self._live_plays(target, from_ts, to_ts), key=lambda p: p.played_at)
+
+    async def streak(self, target: Target) -> Streak | None:
+        """Current artist/album/track streak (port of PlayService.GetCurrentStreak)."""
+        recent = await self._lastfm.recent_tracks(target.lastfm_username, limit=PAGE_SIZE,
+                                                  session_key=target.session_key, extended=False)
+        if not recent.tracks:
+            return None
+        plays = [Play(None if s.now_playing else s.timestamp, s.artist, s.album or None, s.track)
+                 for s in recent.tracks]
+        current, previous = plays[0], plays[1:]
+        streak = Streak(current)
+        if not streak.feed(previous) or not previous or not (target.indexed and target.user_id):
+            return streak
+
+        # Still going after a full page: continue from the play index.
+        await self._indexer.update(target.user_id)
+        before = previous[-1].played_at
+        while streak.alive and before:
+            rows = await self._db.recent_plays(target.user_id, before, PAGE_SIZE)
+            if not rows:
+                break
+            streak.feed(Play(r.played_at, r.artist, r.album, r.track) for r in rows)
+            before = rows[-1].played_at
+        return streak
 
     async def album_image(self, artist: str, album: str) -> str | None:
         """Cover lookup for index-based charts, which have no images of their own."""

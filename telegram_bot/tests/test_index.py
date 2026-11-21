@@ -108,9 +108,9 @@ def test_phase1_database_is_stamped_then_upgraded(tmp_path):
         async with engine.begin() as conn:
             await conn.run_sync(lambda c: Base.metadata.create_all(
                 c, tables=[Base.metadata.tables["users"], Base.metadata.tables["chat_members"]]))
-            await conn.exec_driver_sql("ALTER TABLE users DROP COLUMN indexed_at")
-            await conn.exec_driver_sql("ALTER TABLE users DROP COLUMN updated_at")
-            await conn.exec_driver_sql("ALTER TABLE users DROP COLUMN last_scrobble_ts")
+            # Remove every column added after phase 1
+            for column in ("indexed_at", "updated_at", "last_scrobble_ts", "timezone", "fm_mode"):
+                await conn.exec_driver_sql(f"ALTER TABLE users DROP COLUMN {column}")
         await engine.dispose()
 
     asyncio.run(create_phase1_tables())

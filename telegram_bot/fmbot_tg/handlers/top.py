@@ -85,8 +85,7 @@ async def top_page(query: CallbackQuery, callback_data: TopPage, stats: Stats, d
         await query.answer()
         return
     user = await db.get_user_by_lastfm(callback_data.user)
-    target = (Target(user.lastfm_username, user.session_key, False, user.id, user.indexed_at is not None)
-              if user else Target(callback_data.user, None, False))
+    target = Target.from_user(user, False) if user else Target(callback_data.user, None, False)
     text, markup = await render_top(stats, target, KINDS[callback_data.kind], period, callback_data.page)
     try:
         await query.message.edit_text(text, reply_markup=markup)
