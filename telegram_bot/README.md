@@ -3,7 +3,7 @@
 A Python port of FMBot that runs on Telegram instead of Discord. It uses
 [aiogram 3](https://docs.aiogram.dev), httpx, SQLAlchemy 2 (async) and Pillow.
 
-Phases 1, 2 and 3 of the port are done, and phase 4 is under way. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
+Phases 1 to 4 of the port are done. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
 
 ## Setup
 
@@ -65,6 +65,9 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/members`, `/groupsettings` | `/gs` | Who in the group has connected Last.fm; the group's crown, command and block settings |
 | `/block`, `/unblock`, `/blocked` | | Group admins: leave someone out of this group's who knows, crowns and charts |
 | `/disable`, `/enable`, `/disabled` | | Group admins: turn commands off in this group (any alias works, e.g. `/disable wk`) |
+| `/autopost` | | Group admins: post the group's charts or a recap every Monday or on the 1st |
+| `/jumble`, `/pixelation` | `/j`, `/px` | Guess one of your artists from scrambled letters, or an album from a pixelated cover |
+| `/shortcut add <name> <command>` | `/sc` | Your own commands, e.g. `/mine` for `/fm lfm:you`; extra words are added to the end |
 | `/topgenres [period]`, `/topcountries [period]` | `/tg`, `/tc` | Your top genres, or where your top artists are from |
 | `/genre [genre or artist]`, `/country [country or artist]` | `/g` | Your top artists in a genre or from a country; with an artist, its genres or country |
 | `/whoknowsgenre`, `/whoknowscountry` | `/wkg`, `/wkc` | Group leaderboard for a genre or country (`/fwkg`, `/fwkc` among your friends) |
@@ -125,6 +128,15 @@ Disabled commands are ignored silently in that group and still work in private c
 
 Global who knows only counts imported histories. People who keep the default `/privacy chat` show
 as "Private user", except to themselves and in groups they're in.
+
+## Games
+
+`/jumble` gives 25 seconds to unscramble one of your artists from hints; `/pixelation` gives 40
+seconds to name one of your albums from a cover that gets clearer as time passes. Answers are
+lenient like FMBot's: case, accents, punctuation and edition suffixes don't matter, and one typo is
+fine (two on long names). With Telegram's privacy mode on (the default), the bot only sees replies
+to its own messages in groups, so players reply to the game message. One game runs per chat; games
+live in memory, so a restart ends them.
 
 ## Genres and countries
 

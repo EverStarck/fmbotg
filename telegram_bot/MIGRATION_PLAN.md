@@ -81,9 +81,9 @@ Moved to later phases, because they depend on data this phase doesn't have:
   need Spotify data (artist images, popularity, track lengths), phase 5
 - Recap's genre and country pages: phase 4 genres/countries; its bot statistics pages need a command log
 
-## Phase 4: social and group features
+## Phase 4: social and group features (done)
 
-Done so far (migration 0006):
+Done (migrations 0006 to 0009):
 - Privacy level (`/privacy`, `/settings privacy`): `global` names you in global who knows, `chat` (default) shows "Private user"
 - Global who knows (`gwk`, `gwka`, `gwkt`) from imported histories, naming members of the current group regardless
 - Friends: Last.fm follows (`user.getFriends`) plus up to 20 added with `addfriend`; `friends`, `removefriend`,
@@ -98,6 +98,14 @@ Done so far (migration 0006):
   someone out of that group's leaderboards) and `disable`/`enable` (per group, since Telegram has no
   channels; ignored silently like FMBot), group top lists (`groupartists`, `groupalbums`, `grouptracks`)
   from imported histories
+- Autoposts (migration 0009): `/autopost add recap|artists|albums|tracks weekly|monthly [alltime]`, posted
+  Mondays or on the 1st at 12:00 UTC by a background loop; paused automatically if the bot is removed.
+  FMBot's role and artist filters and its premium gating aren't ported.
+- Games: `jumble` and `pixelation` with FMBot's answer matching and timers, hint/reshuffle/clearer/give-up
+  buttons; guesses are replies to the game message (Telegram privacy mode). Sessions are in memory, with no
+  game statistics yet.
+- Shortcuts (migration 0009): `/shortcut add name /command args`, expanded before command routing so
+  disabled commands still apply; available to everyone (FMBot limits them to supporters).
 
 | C# source | Commands / features |
 |---|---|

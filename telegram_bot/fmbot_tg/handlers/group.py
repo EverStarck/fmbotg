@@ -10,7 +10,7 @@ from ..config import Settings
 from ..context import UserFacingError, require_group, require_group_admin, resolve_target
 from ..db import DEFAULT_CROWN_THRESHOLD, Database
 from ..formatting import TELEGRAM_TEXT_LIMIT, esc, link, plural, truncate, user_link
-from ..periods import ALL_TIME, parse_period
+from ..periods import ALL_TIME, Period, parse_period
 from ..stats import music_url
 from ..toggles import PROTECTED, CommandToggles
 
@@ -181,25 +181,37 @@ async def disabled(message: Message, toggles: CommandToggles) -> None:
 
 # --- group top lists --------------------------------------------------------------------------
 
-async def _group_top(message: Message, command: CommandObject, kind: str, db: Database, settings: Settings) -> None:
-    """Top artists/albums/tracks across the group's imported histories (port of the server charts)."""
-    require_group(message)
-    period, _ = parse_period((command.args or "").split())
-    people = [m for m in await db.chat_lastfm_users(message.chat.id, settings.whoknows_max_members) if m.indexed_at]
+async def group_top_text(db: Database, chat_id: int, chat_title: str, kinds: list[str], period: Period,
+                         max_members: int, shown: int = GROUP_TOP_SHOWN) -> str:
+    """Top artists/albums/tracks across a group's imported histories (port of the server charts).
+    Several kinds make a recap with one section each."""
+    people = [m for m in await db.chat_lastfm_users(chat_id, max_members) if m.indexed_at]
     if not people:
         raise UserFacingError("Group charts use imported histories, and nobody here has one yet. "
                               "It's imported automatically after /login.")
     from_ts, to_ts = (0, 2**62) if period == ALL_TIME else period.bounds()
-    rows = await db.group_top([m.id for m in people], kind, from_ts, to_ts, limit=GROUP_TOP_SHOWN)
-    if not rows:
+    title = "Top " + kinds[0] if len(kinds) == 1 else "Recap"
+    lines = [f"<b>{title} in {esc(chat_title)}</b> · {esc(period.label)}"]
+    found = False
+    for kind in kinds:
+        rows = await db.group_top([m.id for m in people], kind, from_ts, to_ts, limit=shown)
+        found = found or bool(rows)
+        lines.append("" if len(kinds) == 1 else f"\n<b>Top {kind}</b>")
+        for i, (name, artist, plays, listeners) in enumerate(rows, 1):
+            by = f" — {esc(artist)}" if artist else ""
+            lines.append(f"{i}. {link(name, music_url(artist or name, name, kind))}{by} · "
+                         f"<b>{plural(plays, 'play')}</b> · {plural(listeners, 'listener')}")
+    if not found:
         raise UserFacingError(f"No plays here for {esc(period.label)}.")
-    lines = [f"<b>Top {kind} in {_chat(message)}</b> · {esc(period.label)}", ""]
-    for i, (name, artist, plays, listeners) in enumerate(rows, 1):
-        by = f" — {esc(artist)}" if artist else ""
-        lines.append(f"{i}. {link(name, music_url(artist or name, name, kind))}{by} · "
-                     f"<b>{plural(plays, 'play')}</b> · {plural(listeners, 'listener')}")
     lines += ["", f"<code>From {plural(len(people), 'member')} with an imported history</code>"]
-    await message.reply(truncate("\n".join(lines), TELEGRAM_TEXT_LIMIT))
+    return truncate("\n".join(lines), TELEGRAM_TEXT_LIMIT)
+
+
+async def _group_top(message: Message, command: CommandObject, kind: str, db: Database, settings: Settings) -> None:
+    require_group(message)
+    period, _ = parse_period((command.args or "").split())
+    await message.reply(await group_top_text(db, message.chat.id, message.chat.title or "this group", [kind], period,
+                                             settings.whoknows_max_members))
 
 
 @router.message(Command("groupartists", "serverartists", "sa", "gta"))

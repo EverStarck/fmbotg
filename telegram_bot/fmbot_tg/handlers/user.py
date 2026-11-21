@@ -31,6 +31,7 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /profile — your Last.fm profile stats
 /update — fetch new scrobbles (<code>/update full</code> re-imports everything)
 /settings — time zone, /fm style and your own /fm template
+/shortcut — your own commands, e.g. /mine for <code>/fm lfm:you</code>
 /privacy — <code>global</code> shows your name in global who knows, <code>chat</code> (default) hides it
 
 <b>Listening</b>
@@ -70,12 +71,17 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /groupartists /groupalbums /grouptracks — top lists across everyone here with an imported history
 /members — who here has connected Last.fm
 Admins: /crownthreshold, /togglecrowns, /crownseeder (hand out crowns from imported histories), /killcrown
+Admins: /autopost — post group charts every week or month
 Admins: /block /unblock — leave someone out of this group's leaderboards; /disable /enable — turn commands off here (/groupsettings shows it all)
 
 <b>Genres and countries</b> (genres are Last.fm tags, countries come from MusicBrainz)
 /topgenres /topcountries — your top genres or countries, optionally for a period
 /genre /country — your top artists in a genre or from a country, or an artist's genres or country
 /whoknowsgenre /whoknowscountry — who here listens to it the most (/fwkg, /fwkc among your friends)
+
+<b>Games</b> (reply to the game message with your guess)
+/jumble — guess one of your artists from scrambled letters and hints
+/pixelation — guess one of your albums from a pixelated cover
 
 <b>Friends</b> (people you follow on Last.fm, plus any you add)
 /friendsfm — what your friends are playing

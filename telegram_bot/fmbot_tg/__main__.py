@@ -11,6 +11,7 @@ from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.filters import ExceptionTypeFilter
 from aiogram.types import BotCommand, ErrorEvent
 
+from .autopost import Autoposter
 from .config import Settings
 from .context import UserFacingError, configure_aliases
 from .db import Database
@@ -21,6 +22,7 @@ from .metadata import Metadata
 from .middleware import TrackMembersMiddleware, membership_router
 from .migrate import upgrade as run_migrations
 from .stats import Stats
+from .shortcuts import ShortcutMiddleware, Shortcuts
 from .toggles import CommandToggles, DisabledCommandsMiddleware
 
 log = logging.getLogger("fmbot_tg")
@@ -66,6 +68,10 @@ COMMANDS = [
     BotCommand(command="groupartists", description="Top artists across this group"),
     BotCommand(command="members", description="Last.fm users in this group"),
     BotCommand(command="groupsettings", description="This group's settings"),
+    BotCommand(command="jumble", description="Guess the artist from scrambled letters"),
+    BotCommand(command="pixelation", description="Guess the album from a pixelated cover"),
+    BotCommand(command="autopost", description="Post group charts on a schedule (admins)"),
+    BotCommand(command="shortcut", description="Your own command shortcuts"),
     BotCommand(command="crowns", description="Your crowns in this group"),
     BotCommand(command="crown", description="Who holds the crown for an artist"),
     BotCommand(command="crownleaderboard", description="Who has the most crowns here"),
@@ -91,13 +97,17 @@ async def _reply_error(event: ErrorEvent, text: str) -> None:
 
 
 def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings, indexer: Indexer,
-                     metadata: Metadata | None = None) -> Dispatcher:
+                     metadata: Metadata | None = None, autoposter: Autoposter | None = None) -> Dispatcher:
     configure_aliases(settings.fm_aliases)
     metadata = metadata or Metadata(db, lastfm, lastfm.http, settings.user_agent)
+    autoposter = autoposter or Autoposter(db, settings.whoknows_max_members)
     toggles = CommandToggles(db)
+    shortcuts = Shortcuts(db, toggles)
     dp = Dispatcher(db=db, lastfm=lastfm, settings=settings, indexer=indexer, stats=Stats(db, lastfm, indexer),
-                    metadata=metadata, toggles=toggles)
+                    metadata=metadata, toggles=toggles, shortcuts=shortcuts, autoposter=autoposter)
     dp.message.outer_middleware(TrackMembersMiddleware(db))
+    # Shortcuts first, so a disabled command can't be reached through one
+    dp.message.outer_middleware(ShortcutMiddleware(shortcuts))
     dp.message.outer_middleware(DisabledCommandsMiddleware(toggles))
     dp.include_router(membership_router)
     routers = all_routers()
@@ -131,7 +141,8 @@ async def run() -> None:
               default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True))
     indexer = Indexer(db, lastfm, notify=lambda chat_id, text: bot.send_message(chat_id, text))
     metadata = Metadata(db, lastfm, http, settings.user_agent)
-    dp = build_dispatcher(db, lastfm, settings, indexer, metadata)
+    autoposter = Autoposter(db, settings.whoknows_max_members)
+    dp = build_dispatcher(db, lastfm, settings, indexer, metadata, autoposter)
 
     try:
         try:
@@ -141,9 +152,11 @@ async def run() -> None:
         await bot.set_my_commands(COMMANDS)
         log.info("Starting as @%s", me.username)
         indexer.start()
+        autoposter.start(bot)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await indexer.stop()
+        await autoposter.stop()
         await metadata.close()
         await lastfm.close()
         await db.close()

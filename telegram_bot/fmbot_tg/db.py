@@ -90,6 +90,34 @@ class ChatBlockedUser(Base):
 DEFAULT_CROWN_THRESHOLD = 30
 
 
+class UserShortcut(Base):
+    """`/name` that runs another command, e.g. /mine -> /fm lfm:me (port of FMBot's user_shortcuts)."""
+
+    __tablename__ = "user_shortcuts"
+    __table_args__ = (Index("ix_user_shortcuts_user_name", "user_id", "name", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(32))  # lowercase, without the slash
+    output: Mapped[str] = mapped_column(String(500))  # the command it runs, with its slash
+
+
+class Autopost(Base):
+    """A group chart posted on a schedule (port of FMBot's guild autoposts)."""
+
+    __tablename__ = "autoposts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    content: Mapped[str] = mapped_column(String(16))  # "recap", "artists", "albums" or "tracks"
+    schedule: Mapped[str] = mapped_column(String(16))  # "weekly" or "monthly"
+    all_time: Mapped[bool] = mapped_column(Boolean, default=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    next_post_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ArtistMeta(Base):
     """Genres (Last.fm tags) and country (MusicBrainz) per artist, cached across users
     (port of the genre and country columns FMBot keeps on its artists table)."""
@@ -822,3 +850,64 @@ class Database:
         async with self.sessions() as session:
             return [(name, artist if kind != "artists" else None, count, listeners)
                     for name, artist, count, listeners in await session.execute(stmt)]
+
+    # --- phase 4: shortcuts and autoposts ---------------------------------------------------
+
+    async def shortcuts(self, telegram_id: int) -> dict[str, str]:
+        async with self.sessions() as session:
+            rows = await session.execute(
+                select(UserShortcut.name, UserShortcut.output)
+                .join(User, User.id == UserShortcut.user_id).where(User.telegram_id == telegram_id)
+                .order_by(UserShortcut.name))
+            return {name: output for name, output in rows}
+
+    async def set_shortcut(self, user_id: int, name: str, output: str) -> bool:
+        """Add or replace. Returns True if it was new."""
+        async with self.sessions() as session:
+            existing = await session.scalar(select(UserShortcut).where(
+                UserShortcut.user_id == user_id, UserShortcut.name == name))
+            if existing is None:
+                session.add(UserShortcut(user_id=user_id, name=name, output=output))
+            else:
+                existing.output = output
+            await session.commit()
+            return existing is None
+
+    async def remove_shortcut(self, user_id: int, name: str) -> bool:
+        async with self.sessions() as session:
+            result = await session.execute(delete(UserShortcut).where(
+                UserShortcut.user_id == user_id, UserShortcut.name == name))
+            await session.commit()
+            return result.rowcount > 0
+
+    async def autoposts(self, chat_id: int) -> list[Autopost]:
+        async with self.sessions() as session:
+            return list(await session.scalars(select(Autopost).where(Autopost.chat_id == chat_id).order_by(Autopost.id)))
+
+    async def add_autopost(self, chat_id: int, content: str, schedule: str, all_time: bool,
+                           next_post_at: datetime) -> Autopost:
+        async with self.sessions() as session:
+            post = Autopost(chat_id=chat_id, content=content, schedule=schedule, all_time=all_time, enabled=True,
+                            next_post_at=next_post_at)
+            session.add(post)
+            await session.commit()
+            return post
+
+    async def update_autopost(self, autopost_id: int, **values) -> None:
+        assert set(values) <= {"enabled", "next_post_at", "last_posted_at"}, values
+        async with self.sessions() as session:
+            await session.execute(update(Autopost).where(Autopost.id == autopost_id).values(**values))
+            await session.commit()
+
+    async def remove_autopost(self, chat_id: int, autopost_id: int) -> bool:
+        async with self.sessions() as session:
+            result = await session.execute(delete(Autopost).where(
+                Autopost.chat_id == chat_id, Autopost.id == autopost_id))
+            await session.commit()
+            return result.rowcount > 0
+
+    async def due_autoposts(self, now: datetime, limit: int = 20) -> list[Autopost]:
+        async with self.sessions() as session:
+            return list(await session.scalars(
+                select(Autopost).where(Autopost.enabled.is_(True), Autopost.next_post_at <= now)
+                .order_by(Autopost.next_post_at).limit(limit)))
