@@ -43,7 +43,8 @@ class User(Base):
     last_scrobble_ts: Mapped[int | None] = mapped_column(BigInteger)
     # Settings (port of the user settings FMBot keeps on its users table)
     timezone: Mapped[str | None] = mapped_column(String(64))  # IANA name, None = UTC
-    fm_mode: Mapped[str | None] = mapped_column(String(16))  # "full" (default) or "compact"
+    fm_mode: Mapped[str | None] = mapped_column(String(16))  # "full" (default), "compact" or "template"
+    fm_template: Mapped[str | None] = mapped_column(String(2000))
 
 
 class ChatMember(Base):
@@ -197,7 +198,7 @@ class Database:
         user.last_scrobble_ts = None
 
     async def update_settings(self, telegram_id: int, **values) -> None:
-        allowed = {"timezone", "fm_mode"}
+        allowed = {"timezone", "fm_mode", "fm_template"}
         assert set(values) <= allowed, values
         async with self.sessions() as session:
             await session.execute(update(User).where(User.telegram_id == telegram_id).values(**values))

@@ -30,7 +30,7 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /logout — disconnect it
 /profile — your Last.fm profile stats
 /update — fetch new scrobbles (<code>/update full</code> re-imports everything)
-/settings — time zone and /fm style
+/settings — time zone, /fm style and your own /fm template
 
 <b>Listening</b>
 /fm — what you're playing now
@@ -49,7 +49,9 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /search — search your listening history
 
 <b>Top lists</b> (add a period: today, yesterday, 3d, weekly, monthly, quarterly, half, yearly, 2y, alltime or a year like 2019)
-/topartists /topalbums /toptracks
+/topartists /topalbums /toptracks — add <code>bb</code> to compare with the previous period
+/recap — a period at a glance, with buttons for top lists, discoveries and a chart
+/receipt — your top tracks as a store receipt
 
 <b>Info</b> (defaults to what you're playing)
 /artist /album /track — e.g. <code>/album Radiohead - OK Computer</code>

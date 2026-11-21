@@ -38,11 +38,12 @@ class Target:
     indexed: bool = False  # full scrobble history is in the play index
     tz: tzinfo = field(default=timezone.utc)
     fm_mode: str = "full"
+    fm_template: str | None = None
 
     @classmethod
     def from_user(cls, user: User, is_self: bool) -> "Target":
         return cls(user.lastfm_username, user.session_key, is_self, user.id, user.indexed_at is not None,
-                   load_timezone(user.timezone), user.fm_mode or "full")
+                   load_timezone(user.timezone), user.fm_mode or "full", user.fm_template)
 
 
 def load_timezone(name: str | None) -> tzinfo:

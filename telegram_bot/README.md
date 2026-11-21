@@ -3,7 +3,7 @@
 A Python port of FMBot that runs on Telegram instead of Discord. It uses
 [aiogram 3](https://docs.aiogram.dev), httpx, SQLAlchemy 2 (async) and Pillow.
 
-Phases 1 and 2 of the port are done, and phase 3 is partly done. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
+Phases 1, 2 and 3 of the port are done. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
 
 ## Setup
 
@@ -48,8 +48,10 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/artistoverview` | `/ao` | You and one artist: plays, top tracks/albums, plays per year |
 | `/affinity` | `/aff` | Who in the group has the most similar taste to you |
 | `/love`, `/unlove`, `/loved` | `/l`, `/ul` | Love tracks on Last.fm, list loved tracks |
-| `/settings`, `/timezone` | `/tz` | Time zone and `/fm` style (`full`/`compact`) |
-| `/topartists`, `/topalbums`, `/toptracks` | `/ta`, `/tab`, `/tt` | Top lists with page buttons |
+| `/settings`, `/timezone` | `/tz` | Time zone, `/fm` style (`full`/`compact`/`template`) and a custom `/fm` template |
+| `/topartists`, `/topalbums`, `/toptracks` | `/ta`, `/tab`, `/tt` | Top lists with page buttons; `bb` shows rank changes vs the previous period |
+| `/recap [period]` | `/rc` | A period at a glance, with buttons for top lists, discoveries and an album chart |
+| `/receipt [period]` | `/rcpt` | Your top tracks as a store-receipt image |
 | `/artist`, `/album`, `/track` | `/a`, `/ab`, `/tr` | Info and your plays; defaults to what you're playing |
 | `/whoknows`, `/whoknowsalbum`, `/whoknowstrack` | `/wk`, `/wka`, `/wkt` | Group leaderboard for an artist, album or track |
 | `/chart [NxM]` | `/c` | Album collage, up to 10x10; `notitles` hides titles, `skip` leaves out albums without a cover |
@@ -73,12 +75,25 @@ you first. If you edit or delete scrobbles on Last.fm, run `/update full`.
 Migrations run automatically at startup (Alembic). To add one after changing `db.py`:
 `DATABASE_URL=... .venv/bin/alembic revision --autogenerate -m "describe change"`.
 
+## /fm templates
+
+`/settings template` followed by your layout on the next lines replaces `/fm` with your own text,
+using FMBot's `{{variable}}` names (`{{track.name}}`, `{{artist.plays}}`, `{{discovery.artist-discovered}}`, …).
+`$$title:` lines are bold and `$$footer:` lines italic; lines whose variables are all empty are left out.
+`/settings template` alone lists every variable, `/settings template off` removes it.
+
 ## Groups
 
 The Telegram Bot API can't list a group's members, so the bot remembers who it has seen in each
 group. Someone shows up in `/whoknows` once they've connected Last.fm and sent any command in
 that group. Making the bot a group admin lets it notice when people leave. Who knows counts members
 with an imported history from the database and looks up the rest live on Last.fm.
+
+## Images
+
+Charts and receipts are drawn with Pillow. It needs a font that covers the names in your music
+library: the Docker image installs Noto CJK (Latin, Cyrillic, Greek, Chinese, Japanese, Korean).
+Elsewhere it looks for common system fonts; set `FONT_PATH` to use a specific `.ttf`/`.ttc` file.
 
 ## Tests
 

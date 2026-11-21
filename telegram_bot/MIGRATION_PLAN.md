@@ -55,7 +55,7 @@ Deferred from phase 2:
   Last.fm's own totals; here aggregates are computed from `user_plays`, which is fine until it gets slow.
 - Moving the indexer to separate worker processes (arq + Redis) when one process is no longer enough.
 
-## Phase 3: Last.fm command parity (in progress)
+## Phase 3: Last.fm command parity (done)
 
 Done:
 - Settings (migration 0003): `/settings`, `/timezone` (IANA names; calendar periods and overviews use it), `/fm` compact mode
@@ -69,17 +69,17 @@ Done:
 - Saved streaks (migration 0004, saved at 25+ plays like FMBot, kept across `/update full`), `streaks`
 - `gaps` (first 90+ day break per item, SQL window function), `search`, `artistoverview`, `affinity` (group taste neighbours)
 - `/chart skip`
+- Billboard mode for top lists (`bb`: rank changes vs the previous window of the same length, or the previous year)
+- `/fm` templates (migration 0005) with FMBot's `{{variable}}` names; `$$title`/`$$description`/`$$footer` map to bold/plain/italic
+- `recap` (overview, top lists, discoveries, album chart views) and `receipt` (Pillow image)
+- Chart and receipt images use a Unicode font (Noto CJK in Docker, `FONT_PATH` override)
 
-Remaining:
-
-| C# source | Commands |
-|---|---|
-| `PlayBuilders` | recap (multi-page; `/year` covers most of it) |
-| `ArtistSlashCommands`, `ArtistBuilders` | iceberg (needs artist popularity data, comes with Spotify in phase 5) |
-| `TrackSlashCommands`, `TrackBuilders` | trackdetails, receipt (image) |
-| `ChartBuilders`, `ChartService`, `FMBot.Images` | billboard/compare mode, time-listened; artist charts wait for Spotify images (phase 5), since Last.fm serves only placeholders |
-| `UserBuilder`, `FmSettingService`, `TemplateService` | `/fm` templates, privacy levels, botscrobbling, featured |
-| `TopSlashCommands` options | billboard, extra large/small, time listened, no-singles, release year filters (`SettingService`) |
+Moved to later phases, because they depend on data this phase doesn't have:
+- Privacy levels: they control visibility in global who knows, so they come with it in phase 4
+- Template variables for crowns, chat ranks and listeners: phase 4
+- Iceberg, artist charts, track details (audio features), time-listened charts and recap's listening time:
+  need Spotify data (artist images, popularity, track lengths), phase 5
+- Recap's genre and country pages: phase 4 genres/countries; its bot statistics pages need a command log
 
 ## Phase 4: social and group features
 

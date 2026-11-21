@@ -109,7 +109,8 @@ def test_phase1_database_is_stamped_then_upgraded(tmp_path):
             await conn.run_sync(lambda c: Base.metadata.create_all(
                 c, tables=[Base.metadata.tables["users"], Base.metadata.tables["chat_members"]]))
             # Remove every column added after phase 1
-            for column in ("indexed_at", "updated_at", "last_scrobble_ts", "timezone", "fm_mode"):
+            for column in ("indexed_at", "updated_at", "last_scrobble_ts", "timezone", "fm_mode",
+                           "fm_template"):
                 await conn.exec_driver_sql(f"ALTER TABLE users DROP COLUMN {column}")
         await engine.dispose()
 
@@ -173,5 +174,34 @@ async def test_saved_streak_is_updated_in_place_and_survives_reimport(tmp_path):
 
     await db.link_lastfm(1, "another_account", "sk2")
     assert await db.saved_streaks(user.id) == []
+    await lastfm.close()
+    await db.close()
+
+
+async def test_billboard_compares_with_the_previous_window(tmp_path):
+    import time
+
+    from fmbot_tg.context import Target
+    from fmbot_tg.periods import WEEKLY
+    from fmbot_tg.stats import Stats
+
+    now, day = int(time.time()), 86400
+    def plays(count, artist, days_ago):
+        return [(int(now - days_ago * day) + i, artist, artist, artist) for i in range(count)]
+
+    history = FakeHistory(
+        # previous week (7-14 days ago)
+        plays(1, "Old", 9) + plays(1, "Riser", 10) + plays(3, "Faller", 8)
+        # this week
+        + plays(5, "Riser", 2) + plays(2, "Faller", 1) + plays(1, "Newcomer", 0.1)
+    )
+    db, lastfm, indexer, user = await _setup(tmp_path, history)
+    await indexer.run_full_import(user.id)
+    target = Target.from_user(await db.get_user_by_id(user.id), True)
+
+    top = await Stats(db, lastfm, indexer).top(target, "artists", WEEKLY, page=1, page_size=10, billboard=True)
+    # Previous week: Faller (3) #1, Old (1) / Riser (1) tied after it
+    assert [(i.name, i.playcount, i.previous_rank) for i in top.items] == [
+        ("Riser", 5, 3), ("Faller", 2, 1), ("Newcomer", 1, 0)]
     await lastfm.close()
     await db.close()

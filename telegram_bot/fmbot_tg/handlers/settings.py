@@ -12,14 +12,17 @@ from ..context import NOT_REGISTERED_SELF, NotRegistered, Target, UserFacingErro
 from ..db import Database
 from ..formatting import TELEGRAM_TEXT_LIMIT, ago, esc, link, plural, truncate, user_link
 from ..lastfm import LastFmClient, LastFmError
+from ..templates import EXAMPLE_TEMPLATE, MAX_TEMPLATE_LENGTH, VARIABLES, unknown_variables
 
 router = Router(name="settings")
-FM_MODES = ("full", "compact")
+FM_MODES = ("full", "compact", "template")
 
 SETTINGS_HELP = (
     "<b>Settings</b>\n"
     "<code>/settings timezone Europe/Amsterdam</code> — time zone for today, yesterday, years and overviews\n"
-    "<code>/settings fm compact</code> — /fm style: <code>full</code> or <code>compact</code>"
+    "<code>/settings fm compact</code> — /fm style: <code>full</code>, <code>compact</code> or <code>template</code>\n"
+    "<code>/settings template</code> + text on the next lines — your own /fm layout "
+    "(<code>/settings template</code> alone shows the variables)"
 )
 
 
@@ -56,6 +59,7 @@ async def settings(message: Message, command: CommandObject, db: Database) -> No
         await message.reply(
             f"{SETTINGS_HELP}\n\nTime zone: <b>{esc(str(target.tz))}</b> (now {now:%H:%M})\n"
             f"/fm style: <b>{target.fm_mode}</b>"
+            + (f"\n\nYour template:\n<pre>{esc(target.fm_template)}</pre>" if target.fm_template else "")
         )
         return
 
@@ -64,11 +68,42 @@ async def settings(message: Message, command: CommandObject, db: Database) -> No
         await _set_timezone(message, db, value)
     elif setting in ("fm", "fmmode", "mode"):
         if value.lower() not in FM_MODES:
-            raise UserFacingError("Choose <code>full</code> or <code>compact</code>.")
+            raise UserFacingError("Choose <code>full</code>, <code>compact</code> or <code>template</code>.")
+        if value.lower() == "template" and not target.fm_template:
+            raise UserFacingError("Set a template first with <code>/settings template</code>.")
         await db.update_settings(message.from_user.id, fm_mode=value.lower())
         await message.reply(f"/fm style set to <b>{value.lower()}</b>.")
+    elif setting in ("template", "fmtemplate"):
+        # Keep line breaks: everything after the first word, unsplit
+        raw = (command.args or "").split(None, 1)[1] if len(args) > 1 else ""
+        await _set_template(message, db, raw.strip())
     else:
         await message.reply(SETTINGS_HELP)
+
+
+async def _set_template(message: Message, db: Database, text: str) -> None:
+    if not text:
+        names = " ".join(f"<code>{{{{{name}}}}}</code>" for name in sorted(VARIABLES))
+        await message.reply(
+            "Write your /fm layout after <code>/settings template</code>, using variables in double braces. "
+            "Lines starting with <code>$$title:</code> are bold and <code>$$footer:</code> italic. Example:\n"
+            f"<pre>/settings template\n{esc(EXAMPLE_TEMPLATE)}</pre>\n"
+            f"Variables: {names}\n\n<code>/settings template off</code> goes back to the normal /fm."
+        )
+        return
+    if text.lower() in ("off", "reset", "remove"):
+        await db.update_settings(message.from_user.id, fm_template=None, fm_mode="full")
+        await message.reply("Template removed; /fm is back to the full style.")
+        return
+    if len(text) > MAX_TEMPLATE_LENGTH:
+        raise UserFacingError(f"Templates can be at most {MAX_TEMPLATE_LENGTH} characters.")
+    unknown = unknown_variables(text)
+    await db.update_settings(message.from_user.id, fm_template=text, fm_mode="template")
+    reply = "Template saved and /fm switched to it. Try /fm."
+    if unknown:
+        reply += "\nThese variables aren't supported here and will be empty: " + ", ".join(
+            f"<code>{esc(u)}</code>" for u in unknown)
+    await message.reply(reply)
 
 
 async def _set_timezone(message: Message, db: Database, value: str) -> None:

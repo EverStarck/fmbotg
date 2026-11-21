@@ -9,8 +9,9 @@ from aiogram.types import Message
 
 from ..context import UserFacingError, resolve_target
 from ..db import Database
-from ..formatting import TELEGRAM_CAPTION_LIMIT, ago, esc, link, num, plural, truncate, user_link
+from ..formatting import TELEGRAM_CAPTION_LIMIT, TELEGRAM_TEXT_LIMIT, ago, esc, link, num, plural, truncate, user_link
 from ..lastfm import LastFmClient
+from ..templates import TemplateContext, render as render_template
 
 router = Router(name="play")
 
@@ -25,6 +26,13 @@ async def now_playing(message: Message, command: CommandObject, lastfm: LastFmCl
 
     current = recent.tracks[0]
     previous = recent.tracks[1] if len(recent.tracks) > 1 else None
+
+    if target.fm_mode == "template" and target.fm_template:
+        name = message.from_user.full_name if target.is_self else target.lastfm_username
+        ctx = TemplateContext(target, name, current, previous, recent.total, lastfm, db)
+        text = await render_template(target.fm_template, ctx)
+        await message.reply(truncate(text or "(your template rendered empty)", TELEGRAM_TEXT_LIMIT))
+        return
 
     if target.fm_mode == "compact":
         # Port of FMBot's small embed mode: one line, no cover

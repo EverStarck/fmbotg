@@ -9,11 +9,11 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, Message
 
 from ..charts import Tile, parse_size, render
-from ..context import UserFacingError, resolve_target
+from ..context import Target, UserFacingError, resolve_target
 from ..db import Database
 from ..formatting import esc, user_link
 from ..lastfm import LastFmClient
-from ..periods import parse_period
+from ..periods import Period, parse_period
 from ..stats import Stats
 
 router = Router(name="chart")
@@ -53,6 +53,14 @@ async def chart(message: Message, command: CommandObject, lastfm: LastFmClient, 
     target, _ = await resolve_target(message, remaining, db)
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
+    image = await album_chart(stats, lastfm, target, period, cols, rows, titles, skip_empty)
+    caption = f"{cols}x{rows} album chart for {user_link(target.lastfm_username)} · {esc(period.label)}"
+    await message.reply_photo(BufferedInputFile(image, filename="chart.jpg"), caption=caption)
+
+
+async def album_chart(stats: Stats, lastfm: LastFmClient, target: Target, period: Period, cols: int, rows: int,
+                      titles: bool = True, skip_empty: bool = False) -> bytes:
+    """Render an album collage as JPEG bytes (shared by /chart and /recap)."""
     wanted = cols * rows
     # With skip, fetch extra albums so there are enough with covers to fill the grid.
     fetch = min(wanted * 2, 200) if skip_empty else wanted
@@ -70,7 +78,4 @@ async def chart(message: Message, command: CommandObject, lastfm: LastFmClient, 
              for item, cover in zip(top.items, covers) if cover or not skip_empty][:wanted]
     if not tiles:
         raise UserFacingError("None of those albums have a cover.")
-    image = await asyncio.to_thread(render, tiles, cols, rows, titles)
-
-    caption = f"{cols}x{rows} album chart for {user_link(target.lastfm_username)} · {esc(period.label)}"
-    await message.reply_photo(BufferedInputFile(image, filename="chart.jpg"), caption=caption)
+    return await asyncio.to_thread(render, tiles, cols, rows, titles)

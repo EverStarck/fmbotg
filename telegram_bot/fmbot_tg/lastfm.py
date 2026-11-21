@@ -119,6 +119,8 @@ class TopItem:
     playcount: int
     url: str
     image: str | None
+    # Billboard mode: rank in the previous period, 0 when it wasn't there (new entry)
+    previous_rank: int | None = None
 
 
 @dataclass(frozen=True)

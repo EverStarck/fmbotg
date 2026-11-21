@@ -51,6 +51,8 @@ COMMANDS = [
     BotCommand(command="whoknowsalbum", description="Who listens to an album the most here"),
     BotCommand(command="whoknowstrack", description="Who listens to a track the most here"),
     BotCommand(command="chart", description="Album collage, e.g. /chart 4x4 monthly"),
+    BotCommand(command="recap", description="A period at a glance"),
+    BotCommand(command="receipt", description="Your top tracks as a receipt"),
     BotCommand(command="profile", description="Last.fm profile stats"),
     BotCommand(command="update", description="Fetch your latest scrobbles"),
     BotCommand(command="settings", description="Time zone and /fm style"),
