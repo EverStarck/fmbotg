@@ -38,6 +38,7 @@ async def chart(message: Message, command: CommandObject, lastfm: LastFmClient, 
 
     cols, rows = 3, 3
     titles = True
+    skip_empty = False
     remaining = []
     for arg in args:
         size = parse_size(arg)
@@ -45,12 +46,17 @@ async def chart(message: Message, command: CommandObject, lastfm: LastFmClient, 
             cols, rows = size
         elif arg.lower() in ("notitles", "nt"):
             titles = False
+        elif arg.lower() in ("skip", "s", "skipemptyimages"):
+            skip_empty = True
         else:
             remaining.append(arg)
     target, _ = await resolve_target(message, remaining, db)
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
-    top = await stats.top(target, "albums", period, page=1, page_size=cols * rows)
+    wanted = cols * rows
+    # With skip, fetch extra albums so there are enough with covers to fill the grid.
+    fetch = min(wanted * 2, 200) if skip_empty else wanted
+    top = await stats.top(target, "albums", period, page=1, page_size=fetch)
     if not top.items:
         raise UserFacingError(f"No albums for {user_link(target.lastfm_username)} ({esc(period.label)}).")
 
@@ -61,7 +67,9 @@ async def chart(message: Message, command: CommandObject, lastfm: LastFmClient, 
 
     covers = await asyncio.gather(*(cover(item) for item in top.items))
     tiles = [Tile(image=cover, title=item.name, subtitle=item.artist or "")
-             for item, cover in zip(top.items, covers)]
+             for item, cover in zip(top.items, covers) if cover or not skip_empty][:wanted]
+    if not tiles:
+        raise UserFacingError("None of those albums have a cover.")
     image = await asyncio.to_thread(render, tiles, cols, rows, titles)
 
     caption = f"{cols}x{rows} album chart for {user_link(target.lastfm_username)} · {esc(period.label)}"

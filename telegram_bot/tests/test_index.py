@@ -130,3 +130,48 @@ async def test_discoveries_only_include_artists_first_played_in_the_range(tmp_pa
     assert await db.track_counts(user.id, "NEW", ["Z", "missing"]) == {"z": 2}
     await lastfm.close()
     await db.close()
+
+
+async def test_gaps_report_the_first_long_break_and_search_matches_substrings(tmp_path):
+    day = 86400
+    t0 = 1_000_000  # any real timestamp; 0 means "no timestamp" in Last.fm data
+    history = FakeHistory([
+        (t0, "Comeback", "A", "x"), (t0 + 1 * day, "Comeback", "A", "x"), (t0 + 200 * day, "Comeback", "A", "x"),
+        (t0 + 600 * day, "Comeback", "A", "x"),  # a second, longer gap: FMBot reports the first one
+        (t0, "Steady", "B", "y"), (t0 + 10 * day, "Steady", "B", "y"), (t0 + 20 * day, "Steady", "B", "y"),
+        (t0, "Rare", "C", "z"), (t0 + 300 * day, "Rare", "C", "z"),  # long gap, but under 3 plays
+    ])
+    db, lastfm, indexer, user = await _setup(tmp_path, history)
+    await indexer.run_full_import(user.id)
+
+    gaps = await db.listening_gaps(user.id, "artists", min_plays=3, min_gap_seconds=90 * day)
+    assert [(name, resumed, gap // day, total) for name, _, resumed, gap, total in gaps] == \
+        [("Comeback", t0 + 200 * day, 199, 4)]
+    # Tracks only need one play before the gap
+    assert {g[0] for g in await db.listening_gaps(user.id, "tracks", 1, 90 * day)} == {"x", "z"}
+
+    assert [r.name for r in await db.search_library(user.id, "artists", "EAD")] == ["Steady"]
+    assert await db.search_library(user.id, "artists", "%") == []  # wildcards are literal
+    await lastfm.close()
+    await db.close()
+
+
+async def test_saved_streak_is_updated_in_place_and_survives_reimport(tmp_path):
+    from fmbot_tg.db import SavedStreak
+
+    db, lastfm, indexer, user = await _setup(tmp_path, FakeHistory([(100, "A", "B", "C")]))
+
+    def streak(count):
+        return SavedStreak(artist="A", album="B", track="C", artist_count=count, album_count=count,
+                           track_count=count, started=50, ended=100 + count)
+
+    assert await db.save_streak(user.id, streak(25)) is True
+    assert await db.save_streak(user.id, streak(30)) is False
+    await indexer.run_full_import(user.id)
+    saved = await db.saved_streaks(user.id)
+    assert [(s.artist_count, s.ended) for s in saved] == [(30, 130)]
+
+    await db.link_lastfm(1, "another_account", "sk2")
+    assert await db.saved_streaks(user.id) == []
+    await lastfm.close()
+    await db.close()

@@ -66,15 +66,18 @@ Done:
 - `year` (index-based year in review), `discoveries`, `artistpace`, `taste` (overlap of both listening distributions)
 - `albumtracks` (index counts, live fallback capped at 30 tracks), `cover` (original-size image), `scrobble`
 - `discovery` for albums and tracks (`albumdiscovery`, `trackdiscovery`)
+- Saved streaks (migration 0004, saved at 25+ plays like FMBot, kept across `/update full`), `streaks`
+- `gaps` (first 90+ day break per item, SQL window function), `search`, `artistoverview`, `affinity` (group taste neighbours)
+- `/chart skip`
 
 Remaining:
 
 | C# source | Commands |
 |---|---|
-| `PlayBuilders` | streaks (saved streak history), recap, gaps, search |
-| `ArtistSlashCommands`, `ArtistBuilders` | artistoverview, affinity, iceberg |
+| `PlayBuilders` | recap (multi-page; `/year` covers most of it) |
+| `ArtistSlashCommands`, `ArtistBuilders` | iceberg (needs artist popularity data, comes with Spotify in phase 5) |
 | `TrackSlashCommands`, `TrackBuilders` | trackdetails, receipt (image) |
-| `ChartBuilders`, `ChartService`, `FMBot.Images` | skip-empty, billboard/compare mode, time-listened; artist charts wait for Spotify images (phase 5), since Last.fm serves only placeholders |
+| `ChartBuilders`, `ChartService`, `FMBot.Images` | billboard/compare mode, time-listened; artist charts wait for Spotify images (phase 5), since Last.fm serves only placeholders |
 | `UserBuilder`, `FmSettingService`, `TemplateService` | `/fm` templates, privacy levels, botscrobbling, featured |
 | `TopSlashCommands` options | billboard, extra large/small, time listened, no-singles, release year filters (`SettingService`) |
 

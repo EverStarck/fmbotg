@@ -16,6 +16,7 @@ BREAKPOINTS = [
     4000000, 5000000,
 ]
 MAX_GOAL = 10_000_000
+STREAK_SAVE_THRESHOLD = 25  # Constants.StreakSaveThreshold
 
 
 def _parse_amount(option: str) -> int | None:
@@ -84,6 +85,10 @@ class Streak:
     @property
     def alive(self) -> bool:
         return bool(self._alive)
+
+    @property
+    def worth_saving(self) -> bool:
+        return max(self.artist_count, self.album_count, self.track_count) >= STREAK_SAVE_THRESHOLD
 
     def feed(self, previous: Iterable[Play]) -> bool:
         """Feed older plays, newest first. Returns whether any streak could still continue."""

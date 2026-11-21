@@ -36,7 +36,7 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /fm — what you're playing now
 /recent — your latest scrobbles
 /plays — scrobble count, optionally for a period
-/streak — how many times in a row you've played the current artist, album and track
+/streak — how many times in a row you've played the current artist, album and track (/streaks for saved ones)
 /pace — when you'll reach a scrobble goal, e.g. <code>/pace 100k</code>
 /milestone — your Nth scrobble, e.g. <code>/milestone 10000</code> or <code>random</code>
 /overview — your last few days, day by day
@@ -45,6 +45,8 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /year — your year in review, e.g. <code>/year 2023</code>
 /discoveries — artists you discovered in a period
 /taste — compare your taste with someone (reply or <code>@handle</code>)
+/gaps — artists, albums or tracks you came back to after 90+ days
+/search — search your listening history
 
 <b>Top lists</b> (add a period: today, yesterday, 3d, weekly, monthly, quarterly, half, yearly, 2y, alltime or a year like 2019)
 /topartists /topalbums /toptracks
@@ -54,14 +56,16 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /artistplays /albumplays /trackplays — your plays, optionally for a period
 /artisttracks /artistalbums — your top tracks and albums by an artist
 /artistpace — when you'll reach a play goal on an artist
+/artistoverview — you and one artist: plays, top tracks and albums, plays per year
 /albumtracks /cover — an album's track list with your plays, and its cover
 /discovery /albumdiscovery /trackdiscovery — when you first and last listened to something
 
 <b>Groups</b>
 /whoknows /whoknowsalbum /whoknowstrack — who listens to it the most here
+/affinity — who here has the most similar taste to you
 
 <b>Charts</b>
-/chart — album collage, e.g. <code>/chart 4x4 monthly</code>, add <code>notitles</code> to hide titles
+/chart — album collage, e.g. <code>/chart 4x4 monthly</code>, add <code>notitles</code> to hide titles or <code>skip</code> to leave out albums without a cover
 
 <b>Other users</b>: reply to their message, or add <code>@handle</code> or <code>lfm:username</code>."""
 

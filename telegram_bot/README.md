@@ -31,7 +31,7 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/update [full]` | `/index` | Fetch new scrobbles; `full` re-imports your whole history |
 | `/plays [period]` | `/p` | Scrobble count |
 | `/artistplays`, `/albumplays`, `/trackplays` | `/ap`, `/abp`, `/tp` | Your plays on something, optionally for a period |
-| `/streak` | `/str` | Current artist/album/track streak |
+| `/streak`, `/streaks` | `/str` | Current artist/album/track streak; streaks of 25+ plays are saved |
 | `/pace [goal] [period]` | `/pc` | When you'll reach a scrobble goal |
 | `/milestone [n\|random]` | `/ms` | Your Nth scrobble |
 | `/overview [days]` | `/ov` | Day-by-day summary, up to 8 days |
@@ -43,12 +43,16 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/discoveries [period]` | `/ds` | Artists you first listened to in a period |
 | `/taste` | `/t` | Compare top artists with someone (reply, `@handle` or `lfm:name`) |
 | `/scrobble Artist - Track` | `/sb` | Scrobble a track now |
+| `/gaps [artists\|albums\|tracks]` | | Things you came back to after 90+ days away |
+| `/search text` | `/find` | Search your listening history |
+| `/artistoverview` | `/ao` | You and one artist: plays, top tracks/albums, plays per year |
+| `/affinity` | `/aff` | Who in the group has the most similar taste to you |
 | `/love`, `/unlove`, `/loved` | `/l`, `/ul` | Love tracks on Last.fm, list loved tracks |
 | `/settings`, `/timezone` | `/tz` | Time zone and `/fm` style (`full`/`compact`) |
 | `/topartists`, `/topalbums`, `/toptracks` | `/ta`, `/tab`, `/tt` | Top lists with page buttons |
 | `/artist`, `/album`, `/track` | `/a`, `/ab`, `/tr` | Info and your plays; defaults to what you're playing |
 | `/whoknows`, `/whoknowsalbum`, `/whoknowstrack` | `/wk`, `/wka`, `/wkt` | Group leaderboard for an artist, album or track |
-| `/chart [NxM]` | `/c` | Album collage, up to 10x10; add `notitles` to hide titles |
+| `/chart [NxM]` | `/c` | Album collage, up to 10x10; `notitles` hides titles, `skip` leaves out albums without a cover |
 
 Periods, with the same aliases as FMBot:
 - From Last.fm directly: `weekly` (default), `monthly`, `quarterly`, `half`, `yearly`, `alltime`

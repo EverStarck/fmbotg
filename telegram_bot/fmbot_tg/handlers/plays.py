@@ -1,6 +1,7 @@
 """Play statistics commands (port of PlaySlashCommands / PlayBuilders and the *plays commands of
 ArtistSlashCommands, AlbumSlashCommands and TrackSlashCommands)."""
 
+import time
 from datetime import datetime, timedelta
 
 from aiogram import Router
@@ -8,7 +9,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
 from ..context import Target, UserFacingError, resolve_subject, resolve_target
-from ..db import Database
+from ..db import Database, SavedStreak
 from ..formatting import TELEGRAM_TEXT_LIMIT, span, ago, esc, link, num, ordinal, plural, truncate, user_link
 from ..lastfm import LastFmClient
 from ..periods import ALL_TIME, Period, parse_period
@@ -103,7 +104,32 @@ async def streak(message: Message, command: CommandObject, db: Database, stats: 
         lines += ["", f"<i>Started {_when(result.started, target)}</i>"]
     if not target.indexed and result.alive:
         lines.append("<i>Only the last 1,000 scrobbles were checked; /update imports the full history.</i>")
+    if result.worth_saving and result.started and target.user_id is not None:
+        saved = SavedStreak(artist=cur.artist, album=cur.album, track=cur.track,
+                            artist_count=result.artist_count, album_count=result.album_count,
+                            track_count=result.track_count, started=result.started,
+                            ended=cur.played_at or int(time.time()))
+        if await db.save_streak(target.user_id, saved):
+            lines.append("<i>Saved to your /streaks.</i>")
     await message.reply("\n".join(lines))
+
+
+@router.message(Command("streaks", "streakhistory"))
+async def streaks(message: Message, command: CommandObject, db: Database) -> None:
+    """Saved streaks of 25+ plays (port of PlayBuilders.StreaksAsync)."""
+    target, _ = await resolve_target(message, (command.args or "").split(), db)
+    rows = await db.saved_streaks(target.user_id) if target.user_id is not None else []
+    if not rows:
+        raise UserFacingError(f"No saved streaks for {user_link(target.lastfm_username)} yet. "
+                              "Streaks of 25 or more plays are saved when you run /streak.")
+    lines = [f"<b>Saved streaks for {user_link(target.lastfm_username)}</b>", ""]
+    for row in rows:
+        start = datetime.fromtimestamp(row.started, target.tz)
+        best = max((row.artist_count, row.artist), (row.album_count, row.album or ""), (row.track_count, row.track))
+        lines.append(f"<b>{start:%d %b %Y}</b> · {esc(best[1])} · <b>{plural(best[0], 'play')}</b>"
+                     f" <i>(artist {num(row.artist_count)}, album {num(row.album_count)}, "
+                     f"track {num(row.track_count)})</i>")
+    await message.reply(truncate("\n".join(lines), TELEGRAM_TEXT_LIMIT))
 
 
 @router.message(Command("pace", "pc"))

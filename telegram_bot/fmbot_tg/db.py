@@ -78,6 +78,24 @@ class UserPlay(Base):
     track_key: Mapped[str] = mapped_column(String(512))
 
 
+class SavedStreak(Base):
+    """A streak worth remembering (port of FMBot's user_streaks; saved at 25+ plays)."""
+
+    __tablename__ = "user_streaks"
+    __table_args__ = (Index("ix_user_streaks_user_started", "user_id", "started", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    artist: Mapped[str] = mapped_column(String(512))
+    album: Mapped[str | None] = mapped_column(String(512))
+    track: Mapped[str] = mapped_column(String(512))
+    artist_count: Mapped[int] = mapped_column(Integer)
+    album_count: Mapped[int] = mapped_column(Integer)
+    track_count: Mapped[int] = mapped_column(Integer)
+    started: Mapped[int] = mapped_column(BigInteger)
+    ended: Mapped[int] = mapped_column(BigInteger)
+
+
 @dataclass(frozen=True)
 class PlayRow:
     played_at: int
@@ -169,8 +187,11 @@ class Database:
             return True
 
     @staticmethod
-    async def _drop_index(session, user: User) -> None:
+    async def _drop_index(session, user: User, keep_streaks: bool = False) -> None:
+        """Remove imported plays. Streaks go too, unless this is a re-import of the same account."""
         await session.execute(delete(UserPlay).where(UserPlay.user_id == user.id))
+        if not keep_streaks:
+            await session.execute(delete(SavedStreak).where(SavedStreak.user_id == user.id))
         user.indexed_at = None
         user.updated_at = None
         user.last_scrobble_ts = None
@@ -228,7 +249,7 @@ class Database:
     async def begin_full_index(self, user_id: int) -> None:
         async with self.sessions() as session:
             user = await session.get(User, user_id)
-            await self._drop_index(session, user)
+            await self._drop_index(session, user, keep_streaks=True)
             user.updated_at = utcnow()
             await session.commit()
 
@@ -392,3 +413,94 @@ class Database:
                 .group_by(UserPlay.track_key)
             )
             return {key: count for key, count in rows}
+
+    # --- phase 3: gaps, search, overview, streaks -------------------------------------------
+
+    def _kind_columns(self, kind: str):
+        """(group-by key columns, display name column) for artists/albums/tracks."""
+        return {
+            "artists": ([UserPlay.artist_key], UserPlay.artist),
+            "albums": ([UserPlay.artist_key, UserPlay.album_key], UserPlay.album),
+            "tracks": ([UserPlay.artist_key, UserPlay.track_key], UserPlay.track),
+        }[kind]
+
+    async def listening_gaps(self, user_id: int, kind: str, min_plays: int,
+                             min_gap_seconds: int) -> list[tuple[str, str, int, int, int]]:
+        """Things you came back to after a long break (port of PlayBuilders.ListeningGapsAsync).
+
+        Returns (name, artist, resumed at, gap seconds, total plays) using the first long gap of each,
+        longest gaps first.
+        """
+        keys, name_col = self._kind_columns(kind)
+        previous = func.lag(UserPlay.played_at).over(partition_by=keys, order_by=UserPlay.played_at)
+        total = func.count().over(partition_by=keys)
+        conditions = [UserPlay.user_id == user_id]
+        if kind == "albums":
+            conditions.append(UserPlay.album_key.is_not(None))
+        inner = (
+            select(*[k.label(f"k{i}") for i, k in enumerate(keys)], name_col.label("name"),
+                   UserPlay.artist.label("artist"), UserPlay.played_at.label("played_at"),
+                   previous.label("previous"), total.label("total"))
+            .where(*conditions)
+            .subquery()
+        )
+        stmt = (
+            select(inner)
+            .where(inner.c.previous.is_not(None), inner.c.played_at - inner.c.previous >= min_gap_seconds,
+                   inner.c.total >= min_plays)
+            .order_by(inner.c.played_at)
+        )
+        seen: set[tuple] = set()
+        gaps = []
+        async with self.sessions() as session:
+            for row in await session.execute(stmt):
+                key = tuple(row[i] for i in range(len(keys)))
+                if key in seen:
+                    continue  # FMBot reports the first long gap per item
+                seen.add(key)
+                gaps.append((row.name, row.artist, row.played_at, row.played_at - row.previous, row.total))
+        gaps.sort(key=lambda g: -g[3])
+        return gaps
+
+    async def search_library(self, user_id: int, kind: str, text: str, limit: int = 10) -> list[AggregateRow]:
+        """Your artists/albums/tracks whose name contains `text`, most played first."""
+        keys, name_col = self._kind_columns(kind)
+        key_col = keys[-1]
+        playcount = func.count().label("playcount")
+        stmt = (
+            select(func.max(name_col), func.max(UserPlay.artist), playcount)
+            .where(UserPlay.user_id == user_id, key_col.contains(name_key(text), autoescape=True))
+            .group_by(*keys)
+            .order_by(playcount.desc())
+            .limit(limit)
+        )
+        async with self.sessions() as session:
+            return [AggregateRow(n, a if kind != "artists" else None, c) for n, a, c in await session.execute(stmt)]
+
+    async def subject_timestamps(self, user_id: int, kind: str, subject: tuple[str, ...]) -> list[int]:
+        async with self.sessions() as session:
+            rows = await session.scalars(
+                select(UserPlay.played_at).where(UserPlay.user_id == user_id, *self._subject_conditions(kind, subject))
+            )
+            return list(rows)
+
+    async def save_streak(self, user_id: int, streak: "SavedStreak") -> bool:
+        """Insert, or update the saved streak with the same start. Returns True if it was new."""
+        async with self.sessions() as session:
+            existing = await session.scalar(select(SavedStreak).where(
+                SavedStreak.user_id == user_id, SavedStreak.started == streak.started))
+            if existing is None:
+                streak.user_id = user_id
+                session.add(streak)
+            else:
+                for column in ("artist", "album", "track", "artist_count", "album_count", "track_count", "ended"):
+                    setattr(existing, column, getattr(streak, column))
+            await session.commit()
+            return existing is None
+
+    async def saved_streaks(self, user_id: int, limit: int = 15) -> list[SavedStreak]:
+        async with self.sessions() as session:
+            rows = await session.scalars(
+                select(SavedStreak).where(SavedStreak.user_id == user_id).order_by(SavedStreak.started.desc()).limit(limit)
+            )
+            return list(rows)
