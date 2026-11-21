@@ -61,6 +61,10 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/crowns`, `/crown`, `/crownleaderboard` | `/cws`, `/cw`, `/cl` | Crowns you hold in a group, one artist's crown history, most crowns |
 | `/crownthreshold`, `/togglecrowns`, `/crownseeder`, `/killcrown` | `/ct`, `/kc` | Group admins: plays needed for a crown, turn crowns off, hand out crowns from imported histories, remove one |
 | `/privacy global\|chat` | | Whether global who knows shows your name |
+| `/groupartists`, `/groupalbums`, `/grouptracks [period]` | `/sa`, `/sab`, `/st` | Top lists across the group's imported histories, with listener counts |
+| `/members`, `/groupsettings` | `/gs` | Who in the group has connected Last.fm; the group's crown, command and block settings |
+| `/block`, `/unblock`, `/blocked` | | Group admins: leave someone out of this group's who knows, crowns and charts |
+| `/disable`, `/enable`, `/disabled` | | Group admins: turn commands off in this group (any alias works, e.g. `/disable wk`) |
 | `/topgenres [period]`, `/topcountries [period]` | `/tg`, `/tc` | Your top genres, or where your top artists are from |
 | `/genre [genre or artist]`, `/country [country or artist]` | `/g` | Your top artists in a genre or from a country; with an artist, its genres or country |
 | `/whoknowsgenre`, `/whoknowscountry` | `/wkg`, `/wkc` | Group leaderboard for a genre or country (`/fwkg`, `/fwkc` among your friends) |
@@ -115,6 +119,9 @@ Crowns work like in FMBot: whoever has the most plays of an artist (30 by defaul
 that group. Crowns change hands when someone runs `/whoknows` for the artist; a tie keeps the current
 holder, and a crown is never taken from someone whose playcount couldn't be fetched. Admin commands
 check Telegram's admin list, so anonymous admins work too.
+
+Disabled commands are ignored silently in that group and still work in private chat. `/help`,
+`/login` and the enable/disable commands can't be turned off.
 
 Global who knows only counts imported histories. People who keep the default `/privacy chat` show
 as "Private user", except to themselves and in groups they're in.

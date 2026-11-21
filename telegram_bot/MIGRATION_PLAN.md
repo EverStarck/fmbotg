@@ -94,6 +94,10 @@ Done so far (migration 0006):
   `fwkgenre`, `topcountries`, `country`, `whoknowscountry`, `fwkcountry`, plus recap's genre and country views.
   Genres are filtered Last.fm tags (FMBot uses Spotify genres, which need phase 5); countries are from
   MusicBrainz in a 1 request/second background queue. `countrychart` is a text list, not FMBot's map image.
+- Group administration (migration 0008): `groupsettings`, `members`, admin-only `block`/`unblock` (leaves
+  someone out of that group's leaderboards) and `disable`/`enable` (per group, since Telegram has no
+  channels; ignored silently like FMBot), group top lists (`groupartists`, `groupalbums`, `grouptracks`)
+  from imported histories
 
 | C# source | Commands / features |
 |---|---|

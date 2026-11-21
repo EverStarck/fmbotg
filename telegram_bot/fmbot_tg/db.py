@@ -74,6 +74,17 @@ class ChatSettings(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     crown_threshold: Mapped[int | None] = mapped_column(Integer)  # None = DEFAULT_CROWN_THRESHOLD
     crowns_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    disabled_commands: Mapped[str | None] = mapped_column(String(2000))  # space-separated canonical names
+
+
+class ChatBlockedUser(Base):
+    """Someone an admin left out of this group's leaderboards (port of FMBot's guild blocked users)."""
+
+    __tablename__ = "chat_blocked_users"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 DEFAULT_CROWN_THRESHOLD = 30
@@ -307,11 +318,13 @@ class Database:
                 await session.commit()
 
     async def chat_lastfm_users(self, chat_id: int, limit: int) -> list[User]:
+        """Linked members seen in this chat, most recently active first, without blocked ones."""
+        blocked = select(ChatBlockedUser.user_id).where(ChatBlockedUser.chat_id == chat_id)
         async with self.sessions() as session:
             rows = await session.scalars(
                 select(User)
                 .join(ChatMember, ChatMember.telegram_id == User.telegram_id)
-                .where(ChatMember.chat_id == chat_id, User.lastfm_username.is_not(None))
+                .where(ChatMember.chat_id == chat_id, User.lastfm_username.is_not(None), User.id.not_in(blocked))
                 .order_by(ChatMember.last_seen.desc())
                 .limit(limit)
             )
@@ -632,7 +645,7 @@ class Database:
             return await session.get(ChatSettings, chat_id) or ChatSettings(chat_id=chat_id, crowns_disabled=False)
 
     async def update_chat_settings(self, chat_id: int, **values) -> None:
-        assert set(values) <= {"crown_threshold", "crowns_disabled"}, values
+        assert set(values) <= {"crown_threshold", "crowns_disabled", "disabled_commands"}, values
         async with self.sessions() as session:
             settings = await session.get(ChatSettings, chat_id)
             if settings is None:
@@ -765,3 +778,47 @@ class Database:
                     await session.rollback()
                     if attempt:
                         raise
+
+    # --- phase 4: group administration ------------------------------------------------------
+
+    async def block_user(self, chat_id: int, user_id: int) -> bool:
+        async with self.sessions() as session:
+            if await session.get(ChatBlockedUser, (chat_id, user_id)) is not None:
+                return False
+            session.add(ChatBlockedUser(chat_id=chat_id, user_id=user_id))
+            await session.commit()
+            return True
+
+    async def unblock_user(self, chat_id: int, user_id: int) -> bool:
+        async with self.sessions() as session:
+            result = await session.execute(delete(ChatBlockedUser).where(
+                ChatBlockedUser.chat_id == chat_id, ChatBlockedUser.user_id == user_id))
+            await session.commit()
+            return result.rowcount > 0
+
+    async def blocked_users(self, chat_id: int) -> list[User]:
+        async with self.sessions() as session:
+            rows = await session.scalars(select(User).join(ChatBlockedUser, ChatBlockedUser.user_id == User.id)
+                                         .where(ChatBlockedUser.chat_id == chat_id).order_by(ChatBlockedUser.created_at))
+            return list(rows)
+
+    async def group_top(self, user_ids: list[int], kind: str, from_ts: int, to_ts: int,
+                        limit: int = 100) -> list[tuple[str, str | None, int, int]]:
+        """(name, artist, plays, listeners) across several people's play index (server top lists)."""
+        if not user_ids:
+            return []
+        keys, name_col = self._kind_columns(kind)
+        conditions = [UserPlay.user_id.in_(user_ids), UserPlay.played_at >= from_ts, UserPlay.played_at < to_ts]
+        if kind == "albums":
+            conditions.append(UserPlay.album_key.is_not(None))
+        plays = func.count().label("plays")
+        stmt = (
+            select(func.max(name_col), func.max(UserPlay.artist), plays, func.count(UserPlay.user_id.distinct()))
+            .where(*conditions)
+            .group_by(*keys)
+            .order_by(plays.desc(), func.max(name_col))
+            .limit(limit)
+        )
+        async with self.sessions() as session:
+            return [(name, artist if kind != "artists" else None, count, listeners)
+                    for name, artist, count, listeners in await session.execute(stmt)]

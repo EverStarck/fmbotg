@@ -21,6 +21,7 @@ from .metadata import Metadata
 from .middleware import TrackMembersMiddleware, membership_router
 from .migrate import upgrade as run_migrations
 from .stats import Stats
+from .toggles import CommandToggles, DisabledCommandsMiddleware
 
 log = logging.getLogger("fmbot_tg")
 
@@ -62,6 +63,9 @@ COMMANDS = [
     BotCommand(command="topcountries", description="Where your top artists are from"),
     BotCommand(command="country", description="Your top artists from a country"),
     BotCommand(command="whoknowsgenre", description="Who listens to a genre the most here"),
+    BotCommand(command="groupartists", description="Top artists across this group"),
+    BotCommand(command="members", description="Last.fm users in this group"),
+    BotCommand(command="groupsettings", description="This group's settings"),
     BotCommand(command="crowns", description="Your crowns in this group"),
     BotCommand(command="crown", description="Who holds the crown for an artist"),
     BotCommand(command="crownleaderboard", description="Who has the most crowns here"),
@@ -90,12 +94,16 @@ def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings, ind
                      metadata: Metadata | None = None) -> Dispatcher:
     configure_aliases(settings.fm_aliases)
     metadata = metadata or Metadata(db, lastfm, lastfm.http, settings.user_agent)
+    toggles = CommandToggles(db)
     dp = Dispatcher(db=db, lastfm=lastfm, settings=settings, indexer=indexer, stats=Stats(db, lastfm, indexer),
-                    metadata=metadata)
+                    metadata=metadata, toggles=toggles)
     dp.message.outer_middleware(TrackMembersMiddleware(db))
+    dp.message.outer_middleware(DisabledCommandsMiddleware(toggles))
     dp.include_router(membership_router)
-    for router in all_routers():
+    routers = all_routers()
+    for router in routers:
         dp.include_router(router)
+    toggles.register(routers)
 
     @dp.errors(ExceptionTypeFilter(UserFacingError))
     async def user_facing(event: ErrorEvent) -> None:

@@ -67,7 +67,10 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /whoknows /whoknowsalbum /whoknowstrack — who listens to it the most here
 /affinity — who here has the most similar taste to you
 /crowns — your crowns here: the artists you have the most plays of (/crown for one artist's history, /crownleaderboard for everyone)
+/groupartists /groupalbums /grouptracks — top lists across everyone here with an imported history
+/members — who here has connected Last.fm
 Admins: /crownthreshold, /togglecrowns, /crownseeder (hand out crowns from imported histories), /killcrown
+Admins: /block /unblock — leave someone out of this group's leaderboards; /disable /enable — turn commands off here (/groupsettings shows it all)
 
 <b>Genres and countries</b> (genres are Last.fm tags, countries come from MusicBrainz)
 /topgenres /topcountries — your top genres or countries, optionally for a period
@@ -96,7 +99,10 @@ async def start_login(message: Message, bot: Bot, lastfm: LastFmClient, db: Data
 @router.message(CommandStart())
 @router.message(Command("help"))
 async def start(message: Message) -> None:
-    await message.answer(HELP_TEXT)
+    # Telegram messages hold 4096 characters, so the help goes out in two parts
+    first, second = HELP_TEXT.split("\n\n<b>Groups</b>", 1)
+    await message.answer(first)
+    await message.answer("<b>Groups</b>" + second)
 
 
 @router.message(Command("login"))

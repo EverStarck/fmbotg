@@ -84,3 +84,57 @@ async def test_friends_are_unique_per_user_ignoring_case(tmp_path):
     assert await db.remove_friend(alice.id, "rJ")
     assert await db.friends(alice.id) == []
     await db.close()
+
+
+async def test_blocked_members_leave_group_leaderboards_but_not_other_groups(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'b.db'}")
+    await db.create_schema()
+    alice = await db.link_lastfm(1, "alice", "sk")
+    bob = await db.link_lastfm(2, "bob", "sk")
+    for telegram_id in (1, 2):
+        await db.touch(telegram_id, None, "x", chat_id=-100)
+        await db.touch(telegram_id, None, "x", chat_id=-200)
+    assert await db.block_user(-100, bob.id) and not await db.block_user(-100, bob.id)
+    assert [u.id for u in await db.chat_lastfm_users(-100, 10)] == [alice.id]
+    assert len(await db.chat_lastfm_users(-200, 10)) == 2
+
+    await db.insert_plays(alice.id, [PlayRow(10, "Muse", "Drones", "Dead Inside"), PlayRow(20, "Muse", None, "Psycho")])
+    await db.insert_plays(bob.id, [PlayRow(15, "Muse", "Drones", "Dead Inside")])
+    assert await db.group_top([alice.id, bob.id], "artists", 0, 100) == [("Muse", None, 3, 2)]
+    assert await db.group_top([alice.id, bob.id], "albums", 0, 100) == [("Drones", "Muse", 2, 2)]
+    assert await db.unblock_user(-100, bob.id)
+    assert len(await db.chat_lastfm_users(-100, 10)) == 2
+    await db.close()
+
+
+async def test_disabled_commands_match_any_alias_and_skip_only_that_group(tmp_path):
+    from aiogram.types import Message
+
+    from fmbot_tg.handlers import all_routers
+    from fmbot_tg.toggles import CommandToggles, DisabledCommandsMiddleware
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 't.db'}")
+    await db.create_schema()
+    toggles = CommandToggles(db)
+    toggles.register(all_routers())
+    assert toggles.resolve("/wk@fmbot") == "whoknows" and toggles.resolve("nope") is None
+    await toggles.save(-100, {"whoknows"})
+
+    calls = []
+
+    async def handler(event, data):
+        calls.append(event.chat.id)
+
+    def message(chat_id: int, text: str) -> Message:
+        return Message.model_validate({"message_id": 1, "date": 0, "text": text,
+                                       "chat": {"id": chat_id, "type": "supergroup" if chat_id < 0 else "private"}})
+
+    middleware = DisabledCommandsMiddleware(toggles)
+    await middleware(handler, message(-100, "/w radiohead"), {})
+    await middleware(handler, message(-200, "/whoknows"), {})
+    await middleware(handler, message(5, "/whoknows"), {})
+    await middleware(handler, message(-100, "/fm"), {})
+    assert calls == [-200, 5, -100]
+    # Survives a restart
+    assert await CommandToggles(db).disabled(-100) == {"whoknows"}
+    await db.close()
