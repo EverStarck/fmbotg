@@ -31,6 +31,7 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 /profile — your Last.fm profile stats
 /update — fetch new scrobbles (<code>/update full</code> re-imports everything)
 /settings — time zone, /fm style and your own /fm template
+/privacy — <code>global</code> shows your name in global who knows, <code>chat</code> (default) hides it
 
 <b>Listening</b>
 /fm — what you're playing now
@@ -65,6 +66,16 @@ HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 <b>Groups</b>
 /whoknows /whoknowsalbum /whoknowstrack — who listens to it the most here
 /affinity — who here has the most similar taste to you
+/crowns — your crowns here: the artists you have the most plays of (/crown for one artist's history, /crownleaderboard for everyone)
+Admins: /crownthreshold, /togglecrowns, /crownseeder (hand out crowns from imported histories), /killcrown
+
+<b>Friends</b> (people you follow on Last.fm, plus any you add)
+/friendsfm — what your friends are playing
+/friendwhoknows /fwka /fwkt — who of your friends listens to it the most
+/friends /addfriend /removefriend — see and change your friends
+
+<b>Global</b>
+/globalwhoknows /gwka /gwkt — top listeners among everyone using this bot
 
 <b>Charts</b>
 /chart — album collage, e.g. <code>/chart 4x4 monthly</code>, add <code>notitles</code> to hide titles or <code>skip</code> to leave out albums without a cover

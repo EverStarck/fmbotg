@@ -9,7 +9,7 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
 from ..context import NOT_REGISTERED_SELF, NotRegistered, Target, UserFacingError, resolve_subject, resolve_target
-from ..db import Database
+from ..db import PRIVACY_CHAT, PRIVACY_GLOBAL, Database
 from ..formatting import TELEGRAM_TEXT_LIMIT, ago, esc, link, plural, truncate, user_link
 from ..lastfm import LastFmClient, LastFmError
 from ..templates import EXAMPLE_TEMPLATE, MAX_TEMPLATE_LENGTH, VARIABLES, unknown_variables
@@ -22,8 +22,14 @@ SETTINGS_HELP = (
     "<code>/settings timezone Europe/Amsterdam</code> — time zone for today, yesterday, years and overviews\n"
     "<code>/settings fm compact</code> — /fm style: <code>full</code>, <code>compact</code> or <code>template</code>\n"
     "<code>/settings template</code> + text on the next lines — your own /fm layout "
-    "(<code>/settings template</code> alone shows the variables)"
+    "(<code>/settings template</code> alone shows the variables)\n"
+    "<code>/privacy global</code> — show your name in global who knows (<code>/privacy chat</code> hides it)"
 )
+
+PRIVACY_TEXT = {
+    PRIVACY_GLOBAL: "Your name shows in global who knows everywhere.",
+    PRIVACY_CHAT: "Global who knows shows you as \"Private user\", except in groups you're in.",
+}
 
 
 def find_timezone(name: str) -> str | None:
@@ -58,7 +64,8 @@ async def settings(message: Message, command: CommandObject, db: Database) -> No
         now = datetime.now(target.tz)
         await message.reply(
             f"{SETTINGS_HELP}\n\nTime zone: <b>{esc(str(target.tz))}</b> (now {now:%H:%M})\n"
-            f"/fm style: <b>{target.fm_mode}</b>"
+            f"/fm style: <b>{target.fm_mode}</b>\n"
+            f"Privacy: <b>{esc(await _privacy(message, db))}</b>"
             + (f"\n\nYour template:\n<pre>{esc(target.fm_template)}</pre>" if target.fm_template else "")
         )
         return
@@ -73,6 +80,8 @@ async def settings(message: Message, command: CommandObject, db: Database) -> No
             raise UserFacingError("Set a template first with <code>/settings template</code>.")
         await db.update_settings(message.from_user.id, fm_mode=value.lower())
         await message.reply(f"/fm style set to <b>{value.lower()}</b>.")
+    elif setting == "privacy":
+        await _set_privacy(message, db, value)
     elif setting in ("template", "fmtemplate"):
         # Keep line breaks: everything after the first word, unsplit
         raw = (command.args or "").split(None, 1)[1] if len(args) > 1 else ""
@@ -117,6 +126,31 @@ async def _set_timezone(message: Message, db: Database, value: str) -> None:
     await db.update_settings(message.from_user.id, timezone=name)
     now = datetime.now(ZoneInfo(name))
     await message.reply(f"Time zone set to <b>{esc(name)}</b> (it's {now:%H:%M} there).")
+
+
+async def _privacy(message: Message, db: Database) -> str:
+    user = await db.get_user(message.from_user.id)
+    return PRIVACY_GLOBAL if user and user.privacy_level == PRIVACY_GLOBAL else PRIVACY_CHAT
+
+
+async def _set_privacy(message: Message, db: Database, value: str) -> None:
+    """Port of the privacy setting: who sees your name in global who knows."""
+    value = value.lower()
+    if not value:
+        current = await _privacy(message, db)
+        await message.reply(f"Privacy: <b>{current}</b>. {PRIVACY_TEXT[current]}\n"
+                            "Change it with <code>/privacy global</code> or <code>/privacy chat</code>.")
+        return
+    if value not in PRIVACY_TEXT:
+        raise UserFacingError("Choose <code>global</code> or <code>chat</code>.")
+    await db.update_settings(message.from_user.id, privacy_level=value)
+    await message.reply(f"Privacy set to <b>{value}</b>. {PRIVACY_TEXT[value]}")
+
+
+@router.message(Command("privacy"))
+async def privacy(message: Message, command: CommandObject, db: Database) -> None:
+    await _self(message, db)
+    await _set_privacy(message, db, (command.args or "").strip())
 
 
 @router.message(Command("timezone", "tz"))

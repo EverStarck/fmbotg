@@ -83,6 +83,14 @@ Moved to later phases, because they depend on data this phase doesn't have:
 
 ## Phase 4: social and group features
 
+Done so far (migration 0006):
+- Privacy level (`/privacy`, `/settings privacy`): `global` names you in global who knows, `chat` (default) shows "Private user"
+- Global who knows (`gwk`, `gwka`, `gwkt`) from imported histories, naming members of the current group regardless
+- Friends: Last.fm follows (`user.getFriends`) plus up to 20 added with `addfriend`; `friends`, `removefriend`,
+  `friendsfm`, friend who knows (`fwk`, `fwka`, `fwkt`)
+- Crowns: claimed and stolen through `/whoknows` with crown history kept, `crowns`, `crown`, `crownleaderboard`;
+  admin-only `crownthreshold`, `togglecrowns`, `crownseeder` (from imported histories), `killcrown`
+
 | C# source | Commands / features |
 |---|---|
 | `CrownService`, `CrownBuilders`, `CrownGuildSettingCommands` | crowns, crown, crown thresholds and seeding |

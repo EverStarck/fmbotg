@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
-    BigInteger, DateTime, ForeignKey, Index, Integer, String, delete, func, insert, or_, select, update,
+    BigInteger, Boolean, DateTime, ForeignKey, Index, Integer, String, delete, func, insert, or_, select, update,
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
@@ -45,6 +45,63 @@ class User(Base):
     timezone: Mapped[str | None] = mapped_column(String(64))  # IANA name, None = UTC
     fm_mode: Mapped[str | None] = mapped_column(String(16))  # "full" (default), "compact" or "template"
     fm_template: Mapped[str | None] = mapped_column(String(2000))
+    # "global" shows your name in global who knows; anything else (default) shows "Private user"
+    privacy_level: Mapped[str | None] = mapped_column(String(16))
+
+
+PRIVACY_GLOBAL = "global"
+PRIVACY_CHAT = "chat"
+
+
+class Friend(Base):
+    """A Last.fm user someone added with /addfriend (port of FMBot's friends table)."""
+
+    __tablename__ = "friends"
+    __table_args__ = (Index("ix_friends_user_name", "user_id", "lastfm_key", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    lastfm_username: Mapped[str] = mapped_column(String(64))
+    lastfm_key: Mapped[str] = mapped_column(String(64))  # lowercase, for case-insensitive uniqueness
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChatSettings(Base):
+    """Per-group settings (port of the crown columns on FMBot's guilds table)."""
+
+    __tablename__ = "chat_settings"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    crown_threshold: Mapped[int | None] = mapped_column(Integer)  # None = DEFAULT_CROWN_THRESHOLD
+    crowns_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+DEFAULT_CROWN_THRESHOLD = 30
+
+
+class Crown(Base):
+    """Who has the most plays of an artist in a group (port of FMBot's user_crowns).
+
+    A stolen crown is kept with active=False so /crown can show its history.
+    """
+
+    __tablename__ = "crowns"
+    __table_args__ = (
+        Index("ix_crowns_chat_artist", "chat_id", "artist_key", "active"),
+        Index("ix_crowns_chat_user", "chat_id", "user_id", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    artist: Mapped[str] = mapped_column(String(512))
+    artist_key: Mapped[str] = mapped_column(String(512))
+    playcount: Mapped[int] = mapped_column(Integer)
+    start_playcount: Mapped[int] = mapped_column(Integer)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    seeded: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ChatMember(Base):
@@ -198,7 +255,7 @@ class Database:
         user.last_scrobble_ts = None
 
     async def update_settings(self, telegram_id: int, **values) -> None:
-        allowed = {"timezone", "fm_mode", "fm_template"}
+        allowed = {"timezone", "fm_mode", "fm_template", "privacy_level"}
         assert set(values) <= allowed, values
         async with self.sessions() as session:
             await session.execute(update(User).where(User.telegram_id == telegram_id).values(**values))
@@ -505,3 +562,161 @@ class Database:
                 select(SavedStreak).where(SavedStreak.user_id == user_id).order_by(SavedStreak.started.desc()).limit(limit)
             )
             return list(rows)
+
+    # --- phase 4: global who knows, friends, crowns ----------------------------------------
+
+    async def global_playcounts(self, kind: str, subject: tuple[str, ...], limit: int = 100) -> list[tuple[User, int]]:
+        """Top listeners of an artist/album/track among everyone with an imported history."""
+        plays = func.count().label("plays")
+        stmt = (
+            select(User, plays)
+            .join(UserPlay, UserPlay.user_id == User.id)
+            .where(User.indexed_at.is_not(None), *self._subject_conditions(kind, subject))
+            .group_by(User.id)
+            .order_by(plays.desc(), User.id)
+            .limit(limit)
+        )
+        async with self.sessions() as session:
+            return [(user, count) for user, count in await session.execute(stmt)]
+
+    async def friends(self, user_id: int) -> list[str]:
+        async with self.sessions() as session:
+            rows = await session.scalars(
+                select(Friend.lastfm_username).where(Friend.user_id == user_id).order_by(Friend.created_at))
+            return list(rows)
+
+    async def add_friend(self, user_id: int, lastfm_username: str) -> bool:
+        """False if they were already a friend."""
+        async with self.sessions() as session:
+            exists = await session.scalar(select(Friend.id).where(
+                Friend.user_id == user_id, Friend.lastfm_key == lastfm_username.lower()))
+            if exists is not None:
+                return False
+            session.add(Friend(user_id=user_id, lastfm_username=lastfm_username, lastfm_key=lastfm_username.lower()))
+            await session.commit()
+            return True
+
+    async def remove_friend(self, user_id: int, lastfm_username: str) -> bool:
+        async with self.sessions() as session:
+            result = await session.execute(delete(Friend).where(
+                Friend.user_id == user_id, Friend.lastfm_key == lastfm_username.lower()))
+            await session.commit()
+            return result.rowcount > 0
+
+    async def users_by_lastfm(self, names: list[str]) -> dict[str, User]:
+        """Registered users by lowercase Last.fm name."""
+        if not names:
+            return {}
+        async with self.sessions() as session:
+            rows = await session.scalars(
+                select(User).where(func.lower(User.lastfm_username).in_([n.lower() for n in names])))
+            return {u.lastfm_username.lower(): u for u in rows}
+
+    async def chat_settings(self, chat_id: int) -> ChatSettings:
+        async with self.sessions() as session:
+            return await session.get(ChatSettings, chat_id) or ChatSettings(chat_id=chat_id, crowns_disabled=False)
+
+    async def update_chat_settings(self, chat_id: int, **values) -> None:
+        assert set(values) <= {"crown_threshold", "crowns_disabled"}, values
+        async with self.sessions() as session:
+            settings = await session.get(ChatSettings, chat_id)
+            if settings is None:
+                settings = ChatSettings(chat_id=chat_id, crowns_disabled=False)
+                session.add(settings)
+            for key, value in values.items():
+                setattr(settings, key, value)
+            await session.commit()
+
+    async def active_crown(self, chat_id: int, artist: str) -> Crown | None:
+        async with self.sessions() as session:
+            return await session.scalar(select(Crown).where(
+                Crown.chat_id == chat_id, Crown.artist_key == name_key(artist), Crown.active.is_(True)))
+
+    async def crown_history(self, chat_id: int, artist: str, limit: int = 10) -> list[tuple[Crown, User]]:
+        async with self.sessions() as session:
+            rows = await session.execute(
+                select(Crown, User).join(User, User.id == Crown.user_id)
+                .where(Crown.chat_id == chat_id, Crown.artist_key == name_key(artist))
+                .order_by(Crown.created_at.desc(), Crown.id.desc()).limit(limit))
+            return [(crown, user) for crown, user in rows]
+
+    async def set_crown(self, chat_id: int, artist: str, user_id: int, playcount: int,
+                        seeded: bool = False) -> Crown:
+        """Give the artist's crown in this chat to `user_id`, or update the holder's playcount."""
+        async with self.sessions() as session:
+            current = await session.scalar(select(Crown).where(
+                Crown.chat_id == chat_id, Crown.artist_key == name_key(artist), Crown.active.is_(True)))
+            if current is not None and current.user_id == user_id:
+                current.playcount = playcount
+                current.updated_at = utcnow()
+                crown = current
+            else:
+                if current is not None:
+                    current.active = False
+                    current.updated_at = utcnow()
+                crown = Crown(chat_id=chat_id, user_id=user_id, artist=artist[:512], artist_key=name_key(artist),
+                              playcount=playcount, start_playcount=playcount, active=True, seeded=seeded)
+                session.add(crown)
+            await session.commit()
+            return crown
+
+    async def update_crown_playcount(self, crown_id: int, playcount: int) -> None:
+        async with self.sessions() as session:
+            await session.execute(update(Crown).where(Crown.id == crown_id).values(
+                playcount=playcount, updated_at=utcnow()))
+            await session.commit()
+
+    async def delete_crowns(self, chat_id: int, artist: str | None = None) -> int:
+        """Remove crowns (all history) for one artist, or for the whole chat."""
+        conditions = [Crown.chat_id == chat_id]
+        if artist is not None:
+            conditions.append(Crown.artist_key == name_key(artist))
+        async with self.sessions() as session:
+            result = await session.execute(delete(Crown).where(*conditions))
+            await session.commit()
+            return result.rowcount
+
+    async def user_crowns(self, chat_id: int, user_id: int) -> list[Crown]:
+        async with self.sessions() as session:
+            rows = await session.scalars(select(Crown).where(
+                Crown.chat_id == chat_id, Crown.user_id == user_id, Crown.active.is_(True))
+                .order_by(Crown.playcount.desc()))
+            return list(rows)
+
+    async def crown_leaderboard(self, chat_id: int, user_ids: list[int], limit: int = 15) -> list[tuple[User, int]]:
+        crowns = func.count().label("crowns")
+        async with self.sessions() as session:
+            rows = await session.execute(
+                select(User, crowns).join(Crown, Crown.user_id == User.id)
+                .where(Crown.chat_id == chat_id, Crown.active.is_(True), User.id.in_(user_ids))
+                .group_by(User.id).order_by(crowns.desc(), User.id).limit(limit))
+            return [(user, count) for user, count in rows]
+
+    async def crown_candidates(self, user_ids: list[int], threshold: int) -> list[tuple[str, int, int]]:
+        """(artist, user id, plays) for every artist someone has at least `threshold` plays of."""
+        if not user_ids:
+            return []
+        plays = func.count().label("plays")
+        stmt = (
+            select(func.max(UserPlay.artist), UserPlay.user_id, plays)
+            .where(UserPlay.user_id.in_(user_ids))
+            .group_by(UserPlay.artist_key, UserPlay.user_id)
+            .having(plays >= threshold)
+        )
+        async with self.sessions() as session:
+            return [(artist, user_id, count) for artist, user_id, count in await session.execute(stmt)]
+
+    async def seed_crowns(self, chat_id: int, picks: list[tuple[str, int, int]]) -> int:
+        """Create crowns from (artist, user id, plays) for artists that have no active crown yet."""
+        async with self.sessions() as session:
+            taken = set(await session.scalars(select(Crown.artist_key).where(
+                Crown.chat_id == chat_id, Crown.active.is_(True))))
+            now = utcnow()
+            rows = [{"chat_id": chat_id, "user_id": user_id, "artist": artist[:512], "artist_key": name_key(artist),
+                     "playcount": plays, "start_playcount": plays, "active": True, "seeded": True,
+                     "created_at": now, "updated_at": now}
+                    for artist, user_id, plays in picks if name_key(artist) not in taken]
+            if rows:
+                await session.execute(insert(Crown), rows)
+            await session.commit()
+            return len(rows)

@@ -142,3 +142,26 @@ async def resolve_subject(
     if not found:
         raise UserFacingError(f"Couldn't find a {kind} matching that. Try <code>Artist - Title</code>.")
     return found
+
+
+async def self_user(message: Message, db: Database) -> User:
+    """The caller's account, for commands that are always about yourself."""
+    user = await db.get_user(message.from_user.id)
+    if user is None or not user.lastfm_username:
+        raise NotRegistered(NOT_REGISTERED_SELF)
+    return user
+
+
+def require_group(message: Message, what: str = "This command") -> None:
+    if message.chat.type not in ("group", "supergroup"):
+        raise UserFacingError(f"{what} only works in groups.")
+
+
+async def require_group_admin(message: Message) -> None:
+    """Port of FMBot's guild permission checks: only group admins change group settings."""
+    require_group(message)
+    if message.sender_chat is not None and message.sender_chat.id == message.chat.id:
+        return  # an admin posting anonymously as the group
+    member = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
+    if member.status not in ("creator", "administrator"):
+        raise UserFacingError("Only group admins can do that.")

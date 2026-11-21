@@ -3,7 +3,7 @@
 A Python port of FMBot that runs on Telegram instead of Discord. It uses
 [aiogram 3](https://docs.aiogram.dev), httpx, SQLAlchemy 2 (async) and Pillow.
 
-Phases 1, 2 and 3 of the port are done. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
+Phases 1, 2 and 3 of the port are done, and phase 4 is under way. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
 
 ## Setup
 
@@ -53,7 +53,14 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/recap [period]` | `/rc` | A period at a glance, with buttons for top lists, discoveries and an album chart |
 | `/receipt [period]` | `/rcpt` | Your top tracks as a store-receipt image |
 | `/artist`, `/album`, `/track` | `/a`, `/ab`, `/tr` | Info and your plays; defaults to what you're playing |
-| `/whoknows`, `/whoknowsalbum`, `/whoknowstrack` | `/wk`, `/wka`, `/wkt` | Group leaderboard for an artist, album or track |
+| `/whoknows`, `/whoknowsalbum`, `/whoknowstrack` | `/wk`, `/wka`, `/wkt` | Group leaderboard for an artist, album or track; artist runs hand out crowns |
+| `/globalwhoknows`, `/gwka`, `/gwkt` | `/gwk` | Leaderboard across everyone with an imported history |
+| `/friendsfm` | `/ffm` | What your friends are playing |
+| `/friendwhoknows`, `/fwka`, `/fwkt` | `/fwk` | Who knows among your friends |
+| `/friends`, `/addfriend`, `/removefriend` | `/af`, `/rf` | Your friends: people you follow on Last.fm plus up to 20 added here |
+| `/crowns`, `/crown`, `/crownleaderboard` | `/cws`, `/cw`, `/cl` | Crowns you hold in a group, one artist's crown history, most crowns |
+| `/crownthreshold`, `/togglecrowns`, `/crownseeder`, `/killcrown` | `/ct`, `/kc` | Group admins: plays needed for a crown, turn crowns off, hand out crowns from imported histories, remove one |
+| `/privacy global\|chat` | | Whether global who knows shows your name |
 | `/chart [NxM]` | `/c` | Album collage, up to 10x10; `notitles` hides titles, `skip` leaves out albums without a cover |
 
 Periods, with the same aliases as FMBot:
@@ -100,6 +107,14 @@ The Telegram Bot API can't list a group's members, so the bot remembers who it h
 group. Someone shows up in `/whoknows` once they've connected Last.fm and sent any command in
 that group. Making the bot a group admin lets it notice when people leave. Who knows counts members
 with an imported history from the database and looks up the rest live on Last.fm.
+
+Crowns work like in FMBot: whoever has the most plays of an artist (30 by default) holds its crown in
+that group. Crowns change hands when someone runs `/whoknows` for the artist; a tie keeps the current
+holder, and a crown is never taken from someone whose playcount couldn't be fetched. Admin commands
+check Telegram's admin list, so anonymous admins work too.
+
+Global who knows only counts imported histories. People who keep the default `/privacy chat` show
+as "Private user", except to themselves and in groups they're in.
 
 ## Images
 

@@ -220,3 +220,11 @@ class Stats:
 
         live_results = await asyncio.gather(*(live(m) for m in members if m.id not in indexed_ids))
         return [(m, sql_counts.get(m.id, 0)) for m in indexed] + list(live_results)
+
+    async def global_whoknows(self, kind: str, subject: tuple[str, ...], caller: User | None,
+                              limit: int = 100) -> list[tuple[User, int]]:
+        """Top listeners among everyone with an imported history (port of the gwk commands)."""
+        if caller is not None and caller.indexed_at is not None:
+            await self._indexer.update(caller.id)
+        rows = await self._db.global_playcounts(kind, subject, limit)
+        return [(user, plays) for user, plays in rows if not self._indexer.is_importing(user.id)]

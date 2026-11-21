@@ -298,6 +298,16 @@ class LastFmClient:
     async def user_info(self, username: str) -> dict:
         return (await self.call("user.getInfo", user=username))["user"]
 
+    async def following(self, username: str, limit: int = 50) -> list[str]:
+        """Who the user follows on Last.fm (user.getFriends). Empty if they follow nobody."""
+        try:
+            data = await self.call("user.getFriends", user=username, limit=limit)
+        except LastFmError as exc:
+            if exc.code == LastFmError.NOT_FOUND:
+                return []
+            raise
+        return [u["name"] for u in as_list((data.get("friends") or {}).get("user")) if u.get("name")]
+
     async def recent_tracks(
         self,
         username: str,
