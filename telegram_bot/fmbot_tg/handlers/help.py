@@ -69,7 +69,7 @@ Admins: /block /unblock — leave someone out of this group's leaderboards; /dis
 
 <b>Games</b> (reply to the game message with your guess)
 /jumble — guess one of your artists from scrambled letters and hints
-/pixelation — guess one of your albums from a pixelated cover
+/pixelation — guess one of your albums from a pixelated cover (<code>/pixelation artist</code> or /pxa: guess the artist)
 
 <b>Friends</b> (people you follow on Last.fm, plus any you add)
 /friendsfm — what your friends are playing

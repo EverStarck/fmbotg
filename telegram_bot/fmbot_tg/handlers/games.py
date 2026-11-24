@@ -15,7 +15,7 @@ from PIL import UnidentifiedImageError
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, Filter
+from aiogram.filters import Command, CommandObject, Filter
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import (
     BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message,
@@ -58,6 +58,8 @@ class Game:
     started: float = field(default_factory=time.monotonic)
     message_id: int | None = None
     scrambled: str = ""
+    album: str = ""  # pixelation: the album whose cover is shown
+    guess: str = "album"  # pixelation: guess the "album" or its "artist"
     cover: bytes | None = None
     level: int = 0
     timer: asyncio.Task | None = None
@@ -65,7 +67,7 @@ class Game:
 
     @property
     def subject(self) -> str:
-        return "artist" if self.kind == "jumble" else "album"
+        return "artist" if self.kind == "jumble" else self.guess
 
     @property
     def seconds(self) -> int:
@@ -91,7 +93,8 @@ def _text(game: Game, private: bool) -> str:
     if game.kind == "jumble":
         return (f"🔀 <b>Jumble</b> · which artist is this?\n\n<code>{esc(game.scrambled)}</code>\n\n"
                 f"{hints}\n\n<i>{how} {JUMBLE_SECONDS} seconds.</i>")
-    return (f"🖼 <b>Pixelation</b> · which album is this?\n\n{hints}\n\n"
+    question = "which album is this?" if game.guess == "album" else "whose album is this? Name the artist."
+    return (f"🖼 <b>Pixelation</b> · {question}\n\n{hints}\n\n"
             f"<i>{how} {PIXELATION_SECONDS} seconds; it gets clearer as time passes.</i>")
 
 
@@ -106,7 +109,9 @@ async def _finish(bot: Bot, sessions: GameSessions, game: Game, winner: str | No
 
     elapsed = time.monotonic() - game.started
     subject = game.subject
-    answer = f"<b>{esc(game.answer)}</b>" + (f" by {esc(game.artist)}" if game.kind == "pixelation" else "")
+    answer = f"<b>{esc(game.answer)}</b>"
+    if game.kind == "pixelation":
+        answer += f" by {esc(game.artist)}" if game.guess == "album" else f" (the cover of <i>{esc(game.album)}</i>)"
     if winner:
         text = f"✅ {esc(winner)} got it in {elapsed:.1f}s! The {subject} was {answer}."
     elif winner is None and guess_message is None and elapsed >= game.seconds - 1:
@@ -239,9 +244,15 @@ async def _fetch_cover(lastfm: LastFmClient, item) -> tuple[bytes, bytes] | None
         return None
 
 
-@router.message(Command("pixelation", "pixel", "px"))
-async def pixelation(message: Message, lastfm: LastFmClient, db: Database, metadata: Metadata, bot: Bot,
-                     moderation: Moderation, game_sessions: GameSessions) -> None:
+ARTIST_MODE = ("artist", "artists", "a", "ar")
+
+
+@router.message(Command("pixelation", "pixel", "px", "pixelationartist", "pxa"))
+async def pixelation(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
+                     metadata: Metadata, bot: Bot, moderation: Moderation, game_sessions: GameSessions) -> None:
+    """Guess the album from its pixelated cover, or with `/pixelation artist` (or /pxa) the artist who made it."""
+    guess_artist = (command.command.lower() in ("pixelationartist", "pxa")
+                    or (command.args or "").strip().lower() in ARTIST_MODE)
     game_sessions.ensure_free(message.chat.id)
     me = await self_user(message, db)
     top = await lastfm.top(me.lastfm_username, "albums", "overall", limit=CANDIDATES)
@@ -260,14 +271,22 @@ async def pixelation(message: Message, lastfm: LastFmClient, db: Database, metad
         raise UserFacingError("You need some more scrobbled albums with covers to play pixelation.")
 
     released = await metadata.release_date(album.artist or "", album.name, wait=2)
-    hints = [f"You've played it {plural(album.playcount, 'time')}",
-             *([f"Released in {released[:4]}"] if released else []),
-             f"By an artist starting with <code>{esc(first_letter_hint(album.artist or '?'))}</code>",
-             f"The album starts with <code>{esc(first_letter_hint(album.name))}</code>",
-             f"By <b>{esc(album.artist or '?')}</b>"]
+    artist = album.artist or "?"
+    year = [f"Released in {released[:4]}"] if released else []
+    if guess_artist:
+        hints = [f"You've played this album {plural(album.playcount, 'time')}", *year,
+                 f"The artist starts with <code>{esc(first_letter_hint(artist))}</code>",
+                 f"The album starts with <code>{esc(first_letter_hint(album.name))}</code>",
+                 f"The album is <b>{esc(album.name)}</b>"]
+    else:
+        hints = [f"You've played it {plural(album.playcount, 'time')}", *year,
+                 f"By an artist starting with <code>{esc(first_letter_hint(artist))}</code>",
+                 f"The album starts with <code>{esc(first_letter_hint(album.name))}</code>",
+                 f"By <b>{esc(artist)}</b>"]
     cover, first = images
-    game = Game(game_sessions.new_id(), "pixelation", message.chat.id, album.name, album.artist or "", hints, 1,
-                cover=cover)
+    answer = artist if guess_artist else album.name
+    game = Game(game_sessions.new_id(), "pixelation", message.chat.id, answer, artist, hints, 1, album=album.name,
+                guess="artist" if guess_artist else "album", cover=cover)
     await _start(bot, game_sessions, game, lambda: message.answer_photo(
         BufferedInputFile(first, "cover.jpg"), caption=_text(game, game.private), reply_markup=_buttons(game)))
     game_sessions.remember(message.from_user.id, album.name)

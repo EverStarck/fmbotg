@@ -44,7 +44,7 @@ COMMANDS = [
     BotCommand(command="members", description="Last.fm users in this group"),
     BotCommand(command="groupsettings", description="This group's settings"),
     BotCommand(command="jumble", description="Guess the artist from scrambled letters"),
-    BotCommand(command="pixelation", description="Guess the album from a pixelated cover"),
+    BotCommand(command="pixelation", description="Guess the album from a pixelated cover (add artist to guess the artist)"),
     BotCommand(command="autopost", description="Post group charts on a schedule (admins)"),
     BotCommand(command="shortcut", description="Your own command shortcuts"),
     BotCommand(command="iceberg", description="Your artists from mainstream to obscure"),

@@ -66,7 +66,7 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/block`, `/unblock`, `/blocked` | | Group admins: leave someone out of this group's who knows, crowns and charts |
 | `/disable`, `/enable`, `/disabled` | | Group admins: turn commands off in this group (any alias works, e.g. `/disable wk`) |
 | `/autopost` | | Group admins: post the group's charts or a recap every Monday or on the 1st |
-| `/jumble`, `/pixelation` | `/j`, `/px` | Guess one of your artists from scrambled letters, or an album from a pixelated cover |
+| `/jumble`, `/pixelation` | `/j`, `/px`, `/pxa` | Guess one of your artists from scrambled letters, or an album from a pixelated cover (`/pixelation artist` or `/pxa`: guess its artist instead) |
 | `/shortcut add <name> <command>` | `/sc` | Your own commands, e.g. `/mine` for `/fm lfm:you`; extra words are added to the end |
 | `/iceberg [period]` | `/ice` | Your artists from mainstream (tip) to obscure (bottom), banded by Last.fm listeners |
 | `/playtime [period]`, `/timeleaderboard` | `/pt`, `/tlb` | Listening time from track lengths; the group leaderboard version |
