@@ -45,6 +45,12 @@ class Settings:
     spotify_client_id: str | None = None
     spotify_client_secret: str | None = None
     youtube_api_key: str | None = None
+    # Optional: /judge through OpenRouter; costs money per call, so each person gets a few per day
+    openrouter_api_key: str | None = None
+    openrouter_model: str | None = None
+    # Telegram user ids allowed to use the owner commands (bans, censoring, /botstats)
+    owner_ids: frozenset[int] = frozenset()
+    judge_daily_limit: int = 5
 
     @property
     def user_agent(self) -> str:
@@ -65,4 +71,8 @@ class Settings:
             spotify_client_id=os.getenv("SPOTIFY_CLIENT_ID") or None,
             spotify_client_secret=os.getenv("SPOTIFY_CLIENT_SECRET") or None,
             youtube_api_key=os.getenv("YOUTUBE_API_KEY") or None,
+            openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
+            openrouter_model=os.getenv("OPENROUTER_MODEL") or None,
+            owner_ids=frozenset(int(i) for i in os.getenv("BOT_OWNER_IDS", "").replace(",", " ").split()),
+            judge_daily_limit=int(os.getenv("JUDGE_DAILY_LIMIT", "5")),
         )

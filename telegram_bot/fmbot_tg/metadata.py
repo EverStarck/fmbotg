@@ -22,6 +22,8 @@ from .lastfm import LastFmClient, LastFmError
 log = logging.getLogger(__name__)
 
 MUSICBRAINZ_URL = "https://musicbrainz.org/ws/2/artist"
+MUSICBRAINZ_RELEASE_GROUPS = "https://musicbrainz.org/ws/2/release-group"
+MUSICBRAINZ_SPACING = 1.1  # MusicBrainz allows one request per second per client
 TAGS_STALE_AFTER = timedelta(days=90)
 COUNTRY_STALE_AFTER = timedelta(days=180)
 IMAGES_STALE_AFTER = timedelta(days=60)
@@ -73,6 +75,25 @@ def flag(code: str | None) -> str:
     if not code or len(code) != 2 or not code.isalpha() or code.upper().startswith("X"):
         return ""
     return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in code.upper())
+
+
+def _mb_quote(text: str) -> str:
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def pick_release_date(artist: str, album: str, groups: list[dict]) -> str | None:
+    """The earliest first-release date among exact title and artist matches (editions included)."""
+    from .games import normalize_answer, remove_edition_suffix
+
+    title = normalize_answer(remove_edition_suffix(album))
+    dates = []
+    for group in groups:
+        credits = {normalize_answer(c.get("name") or (c.get("artist") or {}).get("name", ""))
+                   for c in group.get("artist-credit") or []}
+        if (int(group.get("score") or 0) >= 90 and normalize_answer(group.get("title", "")) == title
+                and normalize_answer(artist) in credits and group.get("first-release-date")):
+            dates.append(group["first-release-date"])
+    return min(dates) if dates else None
 
 
 def pick_musicbrainz_artist(artist: str, results: list[dict]) -> tuple[str, str] | None:
@@ -154,14 +175,18 @@ class Metadata:
         self._http = http
         self._user_agent = user_agent
         self._tags = _Queue(self._fetch_tags, workers=6)
-        self._countries = _Queue(self._fetch_country, workers=1, spacing=1.1)  # MusicBrainz: 1 request/second
+        self._mb_lock = asyncio.Lock()  # one MusicBrainz request at a time, shared by countries and release dates
+        self._mb_last = 0.0
+        self._countries = _Queue(self._fetch_country, workers=1)
+        self._releases = _Queue(self._fetch_release, workers=1,
+                                key=lambda artist, album: (name_key(artist), name_key(album)))
         self._images = _Queue(self._fetch_image, workers=3, spacing=0.2)  # Deezer: 50 requests per 5 seconds
         self._listeners = _Queue(self._fetch_listeners, workers=6)
         self._tracks = _Queue(self._fetch_track, workers=4, spacing=0.1,
                               key=lambda artist, track: (name_key(artist), name_key(track)))
 
     async def close(self) -> None:
-        for queue in (self._tags, self._countries, self._images, self._listeners, self._tracks):
+        for queue in (self._tags, self._countries, self._releases, self._images, self._listeners, self._tracks):
             await queue.close()
 
     async def _fetch_image(self, artist: str) -> object:
@@ -206,18 +231,53 @@ class Metadata:
         await self._db.save_artist_meta(artist, tags="|".join(genres), tags_at=utcnow())
         return genres
 
-    async def _fetch_country(self, artist: str) -> object:
-        query = 'artist:"{}"'.format(artist.replace("\\", "\\\\").replace('"', '\\"'))
-        response = await self._http.get(MUSICBRAINZ_URL, params={"query": query, "limit": 5, "fmt": "json"},
-                                        headers={"User-Agent": self._user_agent}, timeout=15)
-        if response.status_code == 503:
-            await asyncio.sleep(5)  # rate limited; leave it uncached for the next request
-            return FAILED
+    async def _musicbrainz(self, url: str, query: str) -> dict | None:
+        """A rate-limited MusicBrainz search; None when it's busy (don't cache, try later)."""
+        loop = asyncio.get_running_loop()
+        async with self._mb_lock:
+            delay = self._mb_last + MUSICBRAINZ_SPACING - loop.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            try:
+                response = await self._http.get(url, params={"query": query, "limit": 5, "fmt": "json"},
+                                                headers={"User-Agent": self._user_agent}, timeout=15)
+            finally:
+                self._mb_last = loop.time()
+            if response.status_code == 503:
+                self._mb_last += 5  # busy or rate limited: back off
+                return None
         response.raise_for_status()
-        found = pick_musicbrainz_artist(artist, response.json().get("artists") or [])
+        return response.json()
+
+    async def _fetch_country(self, artist: str) -> object:
+        data = await self._musicbrainz(MUSICBRAINZ_URL, f'artist:"{_mb_quote(artist)}"')
+        if data is None:
+            return FAILED
+        found = pick_musicbrainz_artist(artist, data.get("artists") or [])
         await self._db.save_artist_meta(artist, country_code=found[0] if found else "",
                                         country=found[1] if found else "", country_at=utcnow())
         return found
+
+    async def _fetch_release(self, artist: str, album: str) -> object:
+        data = await self._musicbrainz(MUSICBRAINZ_RELEASE_GROUPS,
+                                       f'releasegroup:"{_mb_quote(album)}" AND artist:"{_mb_quote(artist)}"')
+        if data is None:
+            return FAILED
+        date = pick_release_date(artist, album, data.get("release-groups") or [])
+        await self._db.save_album_meta(artist, album, date or "")
+        return date
+
+    async def release_date(self, artist: str, album: str, wait: float = 3.0) -> str | None:
+        """First release date ('2000', '2000-10' or '2000-10-02'), or None if unknown or still pending."""
+        row = await self._db.album_meta(artist, album)
+        if row is not None:
+            return row.release_date or None
+        future = self._releases.request(artist, album)
+        try:
+            result = await asyncio.wait_for(asyncio.shield(future), timeout=wait)
+        except asyncio.TimeoutError:
+            return None
+        return None if result is FAILED else result
 
     async def _lookup(self, artists: list[str], queue: _Queue, read, stale_after: timedelta,
                       wait: float, max_new: int) -> Lookup:

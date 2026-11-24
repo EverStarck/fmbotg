@@ -110,7 +110,7 @@ def test_phase1_database_is_stamped_then_upgraded(tmp_path):
                 c, tables=[Base.metadata.tables["users"], Base.metadata.tables["chat_members"]]))
             # Remove every column added after phase 1
             for column in ("indexed_at", "updated_at", "last_scrobble_ts", "timezone", "fm_mode",
-                           "fm_template", "privacy_level"):
+                           "fm_template", "privacy_level", "bot_banned", "global_hidden"):
                 await conn.exec_driver_sql(f"ALTER TABLE users DROP COLUMN {column}")
         await engine.dispose()
 

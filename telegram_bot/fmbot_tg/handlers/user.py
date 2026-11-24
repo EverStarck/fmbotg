@@ -13,6 +13,7 @@ from aiogram.utils.deep_linking import create_start_link
 
 from ..context import NOT_REGISTERED_SELF, NotRegistered, resolve_target
 from ..db import Database
+from ..toggles import CommandToggles
 from ..formatting import ago, esc, link, num, user_link
 from ..indexer import Indexer
 from ..lastfm import LastFmClient, LastFmError
@@ -99,6 +100,9 @@ Admins: /block /unblock — leave someone out of this group's leaderboards; /dis
 /playtime — how long you've listened, optionally for a period (/timeleaderboard for the group)
 /lyrics — lyrics of what you're playing, or <code>/lyrics Artist - Track</code>
 /links /spotify /youtube /deezer — links to a track
+/judge — an AI compliments or roasts your taste (/roast, /compliment)
+
+<b>Help</b>: <code>/help command</code> explains one command; /faq answers common questions.
 
 <b>Other users</b>: reply to their message, or add <code>@handle</code> or <code>lfm:username</code>."""
 
@@ -108,8 +112,16 @@ async def start_login(message: Message, bot: Bot, lastfm: LastFmClient, db: Data
     await login(message, bot, lastfm, db, indexer)
 
 
-@router.message(CommandStart())
 @router.message(Command("help"))
+async def help_command(message: Message, command: CommandObject, toggles: CommandToggles) -> None:
+    if command.args:
+        from .owner import command_help
+        await command_help(message, command.args.split()[0], toggles)
+        return
+    await start(message)
+
+
+@router.message(CommandStart())
 async def start(message: Message) -> None:
     # Telegram messages hold 4096 characters, so the help goes out in two parts
     first, second = HELP_TEXT.split("\n\n<b>Groups</b>", 1)

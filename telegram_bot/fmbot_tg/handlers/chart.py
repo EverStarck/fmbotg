@@ -8,6 +8,7 @@ from aiogram.enums import ChatAction
 from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, Message
 
+from .. import moderation
 from ..charts import Tile, parse_size, render
 from ..context import Target, UserFacingError, resolve_target
 from ..db import Database, name_key
@@ -77,6 +78,8 @@ async def album_chart(stats: Stats, lastfm: LastFmClient, target: Target, period
         raise UserFacingError(f"No albums for {user_link(target.lastfm_username)} ({esc(period.label)}).")
 
     async def cover(item) -> bytes | None:
+        if moderation.is_censored(item.artist, item.name):
+            return None
         # Index-based (time range) charts have no image URLs; look those up separately.
         url = item.image or (await stats.album_image(item.artist, item.name) if period.is_range else None)
         return await _download(lastfm.http, url)
@@ -97,7 +100,9 @@ async def artist_chart(stats: Stats, lastfm: LastFmClient, metadata: Metadata, t
     if not top.items:
         raise UserFacingError(f"No artists for {user_link(target.lastfm_username)} ({esc(period.label)}).")
     photos = (await metadata.images([item.name for item in top.items], wait=12)).values
-    images = await asyncio.gather(*(_download(lastfm.http, photos.get(name_key(item.name))) for item in top.items))
+    images = await asyncio.gather(*(
+        _download(lastfm.http, None if moderation.is_censored(item.name) else photos.get(name_key(item.name)))
+        for item in top.items))
     tiles = [Tile(image=image, title=item.name, subtitle=f"{item.playcount:,} plays")
              for item, image in zip(top.items, images) if image or not skip_empty][:wanted]
     if not tiles:

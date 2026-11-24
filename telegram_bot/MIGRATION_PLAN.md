@@ -120,16 +120,23 @@ Done (migrations 0006 to 0009):
 | `GameService`, `GameBuilders` | jumble / pixelation games, using inline keyboards |
 | `ShortcutService` | per-user command shortcuts |
 
-## Phase 5: integrations and platform
+## Phase 5: integrations and platform (done)
 
-Skipped by choice: Apple Music, supporters, Discogs, Spotify remote control, translations.
+Skipped by choice: Apple Music, supporters, Discogs, Spotify remote control, translations, Spotify and Apple Music
+history imports. Not ported: Eurovision (FMBot's own contest data), FMBot's server-staff and Discord-only owner tools.
 
-Done so far (migration 0010):
+Done (migrations 0010 and 0011):
 - Spotify's data, without Spotify (its API now needs a Premium owner and dropped popularity): Deezer artist
   photos (`/artist`, `/chart artists`), track lengths from Last.fm then Deezer, `iceberg` banded by Last.fm
   listeners, `playtime` and `timeleaderboard`
 - `lyrics` from LRCLIB (replaces Genius, whose API has no lyrics text)
 - `spotify`, `youtube`, `deezer`, `links`: exact links with optional Spotify/YouTube keys, search links otherwise
+- `judge`/`roast`/`compliment` through OpenRouter (any hosted model, `anthropic/claude-opus-5.5` by default) instead of
+  OpenAI; optional, with a per-person daily limit
+- Album release dates from MusicBrainz (`/album`, pixelation hint), sharing one 1 request/second limiter with countries
+- Owner tools (migration 0011): `botban`/`botunban` (global block list), `hideglobal`/`unhideglobal` (botted users),
+  `censor`/`uncensor` (covers), `moderation`, `botstats`, owners from `BOT_OWNER_IDS`
+- Help: `/help <command>` (description and aliases), `/faq`, `/whoami`
 
 | C# source | Notes |
 |---|---|

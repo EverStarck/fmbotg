@@ -47,6 +47,9 @@ class User(Base):
     fm_template: Mapped[str | None] = mapped_column(String(2000))
     # "global" shows your name in global who knows; anything else (default) shows "Private user"
     privacy_level: Mapped[str | None] = mapped_column(String(16))
+    # Owner moderation (port of FMBot's global block list and botted users)
+    bot_banned: Mapped[bool] = mapped_column(Boolean, default=False)  # the bot ignores them entirely
+    global_hidden: Mapped[bool] = mapped_column(Boolean, default=False)  # left out of global who knows
 
 
 PRIVACY_GLOBAL = "global"
@@ -135,6 +138,31 @@ class ArtistMeta(Base):
     image_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     listeners: Mapped[int | None] = mapped_column(BigInteger)  # Last.fm listeners, the iceberg's popularity
     listeners_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CensoredMusic(Base):
+    """Artists or albums whose images are never shown (port of CensorService's censored music)."""
+
+    __tablename__ = "censored_music"
+    __table_args__ = (Index("ix_censored_music_key", "artist_key", "album_key", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artist: Mapped[str] = mapped_column(String(512))
+    album: Mapped[str | None] = mapped_column(String(512))  # None = every album of the artist
+    artist_key: Mapped[str] = mapped_column(String(512))
+    album_key: Mapped[str] = mapped_column(String(512))  # "" for the whole artist
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AlbumMeta(Base):
+    """First release date per album from MusicBrainz (port of the release dates FMBot shows)."""
+
+    __tablename__ = "album_metadata"
+
+    artist_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    album_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    release_date: Mapped[str] = mapped_column(String(10))  # YYYY, YYYY-MM or YYYY-MM-DD; "" = unknown
+    looked_up_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class TrackMeta(Base):
@@ -643,7 +671,7 @@ class Database:
         stmt = (
             select(User, plays)
             .join(UserPlay, UserPlay.user_id == User.id)
-            .where(User.indexed_at.is_not(None), *self._subject_conditions(kind, subject))
+            .where(User.indexed_at.is_not(None), User.global_hidden.is_not(True), *self._subject_conditions(kind, subject))
             .group_by(User.id)
             .order_by(plays.desc(), User.id)
             .limit(limit)
@@ -970,3 +998,75 @@ class Database:
         )
         async with self.sessions() as session:
             return [(u, a, t, c) for u, a, t, c in await session.execute(stmt)]
+
+    # --- phase 5: owner tools and release dates -------------------------------------------------
+
+    async def set_user_flag(self, user_id: int, **values) -> None:
+        assert set(values) <= {"bot_banned", "global_hidden"}, values
+        async with self.sessions() as session:
+            await session.execute(update(User).where(User.id == user_id).values(**values))
+            await session.commit()
+
+    async def banned_telegram_ids(self) -> set[int]:
+        async with self.sessions() as session:
+            return set(await session.scalars(select(User.telegram_id).where(User.bot_banned.is_(True))))
+
+    async def flagged_users(self) -> list[User]:
+        async with self.sessions() as session:
+            return list(await session.scalars(select(User).where(or_(User.bot_banned.is_(True),
+                                                                        User.global_hidden.is_(True)))))
+
+    async def censored(self) -> list[CensoredMusic]:
+        async with self.sessions() as session:
+            return list(await session.scalars(select(CensoredMusic).order_by(CensoredMusic.artist)))
+
+    async def add_censored(self, artist: str, album: str | None) -> bool:
+        async with self.sessions() as session:
+            session.add(CensoredMusic(artist=artist[:512], album=album and album[:512], artist_key=name_key(artist),
+                                      album_key=name_key(album)))
+            try:
+                await session.commit()
+                return True
+            except IntegrityError:
+                await session.rollback()
+                return False
+
+    async def remove_censored(self, artist: str, album: str | None) -> bool:
+        async with self.sessions() as session:
+            result = await session.execute(delete(CensoredMusic).where(
+                CensoredMusic.artist_key == name_key(artist), CensoredMusic.album_key == name_key(album)))
+            await session.commit()
+            return result.rowcount > 0
+
+    async def album_meta(self, artist: str, album: str) -> AlbumMeta | None:
+        async with self.sessions() as session:
+            return await session.get(AlbumMeta, (name_key(artist), name_key(album)))
+
+    async def save_album_meta(self, artist: str, album: str, release_date: str) -> None:
+        key = (name_key(artist), name_key(album))
+        async with self.sessions() as session:
+            row = await session.get(AlbumMeta, key)
+            if row is None:
+                session.add(AlbumMeta(artist_key=key[0], album_key=key[1], release_date=release_date,
+                                      looked_up_at=utcnow()))
+            else:
+                row.release_date, row.looked_up_at = release_date, utcnow()
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+
+    async def bot_stats(self) -> dict[str, int]:
+        async with self.sessions() as session:
+            async def count(stmt) -> int:
+                return await session.scalar(stmt) or 0
+            return {
+                "users": await count(select(func.count()).select_from(User)),
+                "linked": await count(select(func.count()).where(User.lastfm_username.is_not(None))),
+                "imported": await count(select(func.count()).where(User.indexed_at.is_not(None))),
+                "plays": await count(select(func.count()).select_from(UserPlay)),
+                "groups": await count(select(func.count(ChatMember.chat_id.distinct()))),
+                "crowns": await count(select(func.count()).where(Crown.active.is_(True))),
+                "artists cached": await count(select(func.count()).select_from(ArtistMeta)),
+                "tracks cached": await count(select(func.count()).select_from(TrackMeta)),
+            }

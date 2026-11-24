@@ -17,6 +17,8 @@ from .context import UserFacingError, configure_aliases
 from .db import Database
 from .handlers import all_routers
 from .indexer import Indexer
+from .judge import Judge
+from . import moderation
 from .lastfm import LastFmClient, LastFmError
 from .links import MusicLinks
 from .metadata import Metadata
@@ -77,6 +79,7 @@ COMMANDS = [
     BotCommand(command="playtime", description="How long you've listened, optionally for a period"),
     BotCommand(command="lyrics", description="Lyrics of what you're playing"),
     BotCommand(command="links", description="Spotify, YouTube and Deezer links for a track"),
+    BotCommand(command="judge", description="An AI compliments or roasts your taste"),
     BotCommand(command="crowns", description="Your crowns in this group"),
     BotCommand(command="crown", description="Who holds the crown for an artist"),
     BotCommand(command="crownleaderboard", description="Who has the most crowns here"),
@@ -89,7 +92,8 @@ COMMANDS = [
     BotCommand(command="privacy", description="Show or hide your name in global who knows"),
     BotCommand(command="login", description="Connect your Last.fm account"),
     BotCommand(command="logout", description="Disconnect your Last.fm account"),
-    BotCommand(command="help", description="All commands"),
+    BotCommand(command="help", description="All commands, or /help command for one"),
+    BotCommand(command="faq", description="Common questions"),
 ]
 
 
@@ -109,8 +113,14 @@ def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings, ind
     toggles = CommandToggles(db)
     shortcuts = Shortcuts(db, toggles)
     links = MusicLinks(lastfm.http, settings.spotify_client_id, settings.spotify_client_secret, settings.youtube_api_key)
+    judge = Judge(lastfm.http, settings.openrouter_api_key, settings.openrouter_model, settings.judge_daily_limit)
+    moderation.configure_owners(set(settings.owner_ids))
     dp = Dispatcher(db=db, lastfm=lastfm, settings=settings, indexer=indexer, stats=Stats(db, lastfm, indexer),
-                    metadata=metadata, toggles=toggles, shortcuts=shortcuts, autoposter=autoposter, links=links)
+                    metadata=metadata, toggles=toggles, shortcuts=shortcuts, autoposter=autoposter, links=links,
+                    judge=judge)
+    # Banned people first: nothing else should run for them, not even member tracking
+    dp.message.outer_middleware(moderation.BanMiddleware())
+    dp.callback_query.outer_middleware(moderation.BanMiddleware())
     dp.message.outer_middleware(TrackMembersMiddleware(db))
     # Shortcuts first, so a disabled command can't be reached through one
     dp.message.outer_middleware(ShortcutMiddleware(shortcuts))
@@ -155,6 +165,7 @@ async def run() -> None:
             me = await bot.get_me()
         except TelegramUnauthorizedError:
             raise SystemExit("Telegram rejected TELEGRAM_BOT_TOKEN. Copy it again from @BotFather.") from None
+        await moderation.load(db)
         await bot.set_my_commands(COMMANDS)
         log.info("Starting as @%s", me.username)
         indexer.start()

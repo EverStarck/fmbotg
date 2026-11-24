@@ -21,6 +21,7 @@ from aiogram.types import (
     ReactionTypeEmoji,
 )
 
+from .. import moderation
 from ..context import UserFacingError, self_user
 from ..db import Database, name_key
 from ..formatting import esc, plural
@@ -219,11 +220,11 @@ async def jumble(message: Message, lastfm: LastFmClient, db: Database, metadata:
 
 
 @router.message(Command("pixelation", "pixel", "px"))
-async def pixelation(message: Message, lastfm: LastFmClient, db: Database, bot: Bot) -> None:
+async def pixelation(message: Message, lastfm: LastFmClient, db: Database, metadata: Metadata, bot: Bot) -> None:
     _ensure_free(message.chat.id)
     me = await self_user(message, db)
     top = await lastfm.top(me.lastfm_username, "albums", "overall", limit=CANDIDATES)
-    covers = {(i.name, i.playcount): i for i in top.items if i.image}
+    covers = {(i.name, i.playcount): i for i in top.items if i.image and not moderation.is_censored(i.artist, i.name)}
     recent = set(_recent.get(message.from_user.id, ()))
     album = None
     for _ in range(3):  # a cover can fail to download; try another album
@@ -241,7 +242,9 @@ async def pixelation(message: Message, lastfm: LastFmClient, db: Database, bot: 
     if album is None:
         raise UserFacingError("You need some more scrobbled albums with covers to play pixelation.")
 
+    released = await metadata.release_date(album.artist or "", album.name, wait=2)
     hints = [f"You've played it {plural(album.playcount, 'time')}",
+             *([f"Released in {released[:4]}"] if released else []),
              f"By an artist starting with <code>{esc(first_letter_hint(album.artist or '?'))}</code>",
              f"The album starts with <code>{esc(first_letter_hint(album.name))}</code>",
              f"By <b>{esc(album.artist or '?')}</b>"]

@@ -8,6 +8,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
+from .. import moderation
 from ..context import UserFacingError, resolve_subject, resolve_target
 from ..db import Database, name_key
 from ..formatting import (
@@ -62,7 +63,8 @@ async def artist(message: Message, command: CommandObject, lastfm: LastFmClient,
 
 
 @router.message(Command("album", "ab", "albuminfo"))
-async def album(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
+async def album(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
+                metadata: Metadata) -> None:
     target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     artist_name, album_name = await resolve_subject("album", " ".join(rest), target, lastfm)
     info = await lastfm.album_info(artist_name, album_name, target.lastfm_username)
@@ -74,13 +76,19 @@ async def album(message: Message, command: CommandObject, lastfm: LastFmClient, 
     lines.append(f"{user_link(target.lastfm_username)}: <b>{num(int(info.get('userplaycount') or 0))}</b> plays")
     lines.append(f"Last.fm: {num(int(info.get('listeners') or 0))} listeners · "
                  f"{num(int(info.get('playcount') or 0))} plays")
+    details = []
     if tracks:
-        lines.append(f"{len(tracks)} tracks" + (f" · {duration(total_ms)}" if total_ms else ""))
+        details.append(f"{len(tracks)} tracks" + (f" · {duration(total_ms)}" if total_ms else ""))
+    if released := await metadata.release_date(info.get("artist", artist_name), info["name"]):
+        details.append(f"released {released}")
+    if details:
+        lines.append(" · ".join(details).capitalize())
     if tags := _tags(info):
         lines += ["", f"<i>{tags}</i>"]
     if wiki := clean_wiki((info.get("wiki") or {}).get("summary"), limit=300):
         lines += ["", wiki]
-    await _send(message, "\n".join(lines), pick_image(info.get("image")))
+    censored = moderation.is_censored(info.get("artist", artist_name), info["name"])
+    await _send(message, "\n".join(lines), None if censored else pick_image(info.get("image")))
 
 
 @router.message(Command("track", "tr", "trackinfo"))
@@ -103,7 +111,8 @@ async def track(message: Message, command: CommandObject, lastfm: LastFmClient, 
         lines.append(f"Duration: {duration(int(info['duration']))}")
     if tags := _tags(info):
         lines += ["", f"<i>{tags}</i>"]
-    await _send(message, "\n".join(lines), pick_image(album_info.get("image")))
+    censored = moderation.is_censored(artist_name, album_info.get("title"))
+    await _send(message, "\n".join(lines), None if censored else pick_image(album_info.get("image")))
 
 
 @router.message(Command("albumtracks", "abt", "tracklist"))
@@ -148,6 +157,8 @@ async def cover(message: Message, command: CommandObject, lastfm: LastFmClient, 
     artist_name, album_name = await resolve_subject("album", " ".join(rest), target, lastfm)
     info = await lastfm.album_info(artist_name, album_name)
     image = pick_image(info.get("image"))
+    if moderation.is_censored(info.get("artist", artist_name), info.get("name", album_name)):
+        raise UserFacingError("That cover is hidden on this bot.")
     if not image:
         raise UserFacingError(f"No cover found for <b>{esc(info.get('name', album_name))}</b>.")
     caption = f"<b>{link(info.get('name', album_name), info.get('url', ''))}</b> by {esc(info.get('artist', artist_name))}"

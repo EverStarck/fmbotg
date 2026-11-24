@@ -7,6 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
+from .. import moderation
 from ..context import UserFacingError, resolve_target
 from ..db import Database
 from ..formatting import TELEGRAM_CAPTION_LIMIT, TELEGRAM_TEXT_LIMIT, ago, esc, link, num, plural, truncate, user_link
@@ -70,7 +71,7 @@ async def now_playing(message: Message, command: CommandObject, lastfm: LastFmCl
         lines[-1] = "❤️ " + lines[-1]
 
     text = "\n".join(lines)
-    if current.image:
+    if current.image and not moderation.is_censored(current.artist, current.album):
         try:
             await message.reply_photo(current.image, caption=truncate(text, TELEGRAM_CAPTION_LIMIT))
             return

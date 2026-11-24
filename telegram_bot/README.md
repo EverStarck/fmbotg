@@ -3,7 +3,7 @@
 A Python port of FMBot that runs on Telegram instead of Discord. It uses
 [aiogram 3](https://docs.aiogram.dev), httpx, SQLAlchemy 2 (async) and Pillow.
 
-Phases 1 to 4 of the port are done, and phase 5 is under way. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
+All five phases of the port are done (see MIGRATION_PLAN.md for what was left out). See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
 
 ## Setup
 
@@ -72,6 +72,9 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/playtime [period]`, `/timeleaderboard` | `/pt`, `/tlb` | Listening time from track lengths; the group leaderboard version |
 | `/lyrics` | `/lyr` | Lyrics of what you're playing or `Artist - Track` (from LRCLIB) |
 | `/links`, `/spotify`, `/youtube`, `/deezer` | `/sp`, `/yt`, `/dz` | Links to a track |
+| `/judge`, `/roast`, `/compliment` | | An AI compliments or roasts your taste through OpenRouter (needs `OPENROUTER_API_KEY`; `OPENROUTER_MODEL` defaults to `anthropic/claude-opus-5.5`; `JUDGE_DAILY_LIMIT` per person per day) |
+| `/help <command>`, `/faq`, `/whoami` | | One command's description and aliases; common questions; your Telegram id |
+| `/botban`, `/botunban`, `/hideglobal`, `/unhideglobal`, `/censor`, `/uncensor`, `/moderation`, `/botstats` | | Owner only (`BOT_OWNER_IDS`): ignore someone everywhere, leave someone out of global who knows, hide an album's or artist's covers, bot totals |
 | `/topgenres [period]`, `/topcountries [period]` | `/tg`, `/tc` | Your top genres, or where your top artists are from |
 | `/genre [genre or artist]`, `/country [country or artist]` | `/g` | Your top artists in a genre or from a country; with an artist, its genres or country |
 | `/whoknowsgenre`, `/whoknowscountry` | `/wkg`, `/wkc` | Group leaderboard for a genre or country (`/fwkg`, `/fwkc` among your friends) |
@@ -145,6 +148,13 @@ popularity, so this port uses free sources instead:
   `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` or `YOUTUBE_API_KEY`.
 
 All of it is cached per artist or track in the database and shared between users.
+
+## Owner tools
+
+Put your Telegram id (from `/whoami`) in `BOT_OWNER_IDS`. Owners can ban people from the whole bot
+(`/botban`, they're ignored silently), hide fake scrobblers from global who knows (`/hideglobal`),
+and censor covers (`/censor Artist - Album`, or `/censor Artist` for all their albums), which keeps
+them out of charts, `/fm`, `/album`, `/cover` and pixelation. `/moderation` lists all of it.
 
 ## Games
 
