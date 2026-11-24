@@ -11,126 +11,30 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.deep_linking import create_start_link
 
-from ..context import NOT_REGISTERED_SELF, NotRegistered, resolve_target
+from ..context import resolve_target, self_user
 from ..db import Database
-from ..toggles import CommandToggles
+from ..domain import as_utc
 from ..formatting import ago, esc, link, num, user_link
 from ..indexer import Indexer
+from ..tasks import KeyedTasks
 from ..lastfm import LastFmClient, LastFmError
 
 log = logging.getLogger(__name__)
 router = Router(name="user")
 
-# Strong references so the polling tasks aren't garbage collected mid-login.
-_login_tasks: set[asyncio.Task] = set()
 
-HELP_TEXT = """<b>FMBot for Telegram</b> — Last.fm stats in your chats.
 
-<b>Account</b>
-/login — connect your Last.fm account (private chat)
-/logout — disconnect it
-/profile — your Last.fm profile stats
-/update — fetch new scrobbles (<code>/update full</code> re-imports everything)
-/settings — time zone, /fm style and your own /fm template
-/shortcut — your own commands, e.g. /mine for <code>/fm lfm:you</code>
-/privacy — <code>global</code> shows your name in global who knows, <code>chat</code> (default) hides it
-
-<b>Listening</b>
-/fm — what you're playing now
-/recent — your latest scrobbles
-/plays — scrobble count, optionally for a period
-/streak — how many times in a row you've played the current artist, album and track (/streaks for saved ones)
-/pace — when you'll reach a scrobble goal, e.g. <code>/pace 100k</code>
-/milestone — your Nth scrobble, e.g. <code>/milestone 10000</code> or <code>random</code>
-/overview — your last few days, day by day
-/love /unlove /loved — love tracks on Last.fm
-/scrobble — scrobble a track, e.g. <code>/scrobble Radiohead - Idioteque</code>
-/year — your year in review, e.g. <code>/year 2023</code>
-/discoveries — artists you discovered in a period
-/taste — compare your taste with someone (reply or <code>@handle</code>)
-/gaps — artists, albums or tracks you came back to after 90+ days
-/search — search your listening history
-
-<b>Top lists</b> (add a period: today, yesterday, 3d, weekly, monthly, quarterly, half, yearly, 2y, alltime or a year like 2019)
-/topartists /topalbums /toptracks — add <code>bb</code> to compare with the previous period
-/recap — a period at a glance, with buttons for top lists, discoveries and a chart
-/receipt — your top tracks as a store receipt
-
-<b>Info</b> (defaults to what you're playing)
-/artist /album /track — e.g. <code>/album Radiohead - OK Computer</code>
-/artistplays /albumplays /trackplays — your plays, optionally for a period
-/artisttracks /artistalbums — your top tracks and albums by an artist
-/artistpace — when you'll reach a play goal on an artist
-/artistoverview — you and one artist: plays, top tracks and albums, plays per year
-/albumtracks /cover — an album's track list with your plays, and its cover
-/discovery /albumdiscovery /trackdiscovery — when you first and last listened to something
-
-<b>Groups</b>
-/whoknows /whoknowsalbum /whoknowstrack — who listens to it the most here
-/affinity — who here has the most similar taste to you
-/crowns — your crowns here: the artists you have the most plays of (/crown for one artist's history, /crownleaderboard for everyone)
-/groupartists /groupalbums /grouptracks — top lists across everyone here with an imported history
-/members — who here has connected Last.fm
-Admins: /crownthreshold, /togglecrowns, /crownseeder (hand out crowns from imported histories), /killcrown
-Admins: /autopost — post group charts every week or month
-Admins: /block /unblock — leave someone out of this group's leaderboards; /disable /enable — turn commands off here (/groupsettings shows it all)
-
-<b>Genres and countries</b> (genres are Last.fm tags, countries come from MusicBrainz)
-/topgenres /topcountries — your top genres or countries, optionally for a period
-/genre /country — your top artists in a genre or from a country, or an artist's genres or country
-/whoknowsgenre /whoknowscountry — who here listens to it the most (/fwkg, /fwkc among your friends)
-
-<b>Games</b> (reply to the game message with your guess)
-/jumble — guess one of your artists from scrambled letters and hints
-/pixelation — guess one of your albums from a pixelated cover
-
-<b>Friends</b> (people you follow on Last.fm, plus any you add)
-/friendsfm — what your friends are playing
-/friendwhoknows /fwka /fwkt — who of your friends listens to it the most
-/friends /addfriend /removefriend — see and change your friends
-
-<b>Global</b>
-/globalwhoknows /gwka /gwkt — top listeners among everyone using this bot
-
-<b>Charts</b>
-/chart — album collage, e.g. <code>/chart 4x4 monthly</code>; add <code>artists</code> for artist photos, <code>notitles</code> to hide titles or <code>skip</code> to leave out ones without an image
-/iceberg — your artists from mainstream (tip) to obscure (bottom), by Last.fm listeners
-
-<b>More</b>
-/playtime — how long you've listened, optionally for a period (/timeleaderboard for the group)
-/lyrics — lyrics of what you're playing, or <code>/lyrics Artist - Track</code>
-/links /spotify /youtube /deezer — links to a track
-/judge — an AI compliments or roasts your taste (/roast, /compliment)
-
-<b>Help</b>: <code>/help command</code> explains one command; /faq answers common questions.
-
-<b>Other users</b>: reply to their message, or add <code>@handle</code> or <code>lfm:username</code>."""
 
 
 @router.message(CommandStart(deep_link=True, magic=F.args == "login"))
-async def start_login(message: Message, bot: Bot, lastfm: LastFmClient, db: Database, indexer: Indexer) -> None:
-    await login(message, bot, lastfm, db, indexer)
-
-
-@router.message(Command("help"))
-async def help_command(message: Message, command: CommandObject, toggles: CommandToggles) -> None:
-    if command.args:
-        from .owner import command_help
-        await command_help(message, command.args.split()[0], toggles)
-        return
-    await start(message)
-
-
-@router.message(CommandStart())
-async def start(message: Message) -> None:
-    # Telegram messages hold 4096 characters, so the help goes out in two parts
-    first, second = HELP_TEXT.split("\n\n<b>Groups</b>", 1)
-    await message.answer(first)
-    await message.answer("<b>Groups</b>" + second)
+async def start_login(message: Message, bot: Bot, lastfm: LastFmClient, db: Database, indexer: Indexer,
+                      login_polls: KeyedTasks) -> None:
+    await login(message, bot, lastfm, db, indexer, login_polls)
 
 
 @router.message(Command("login"))
-async def login(message: Message, bot: Bot, lastfm: LastFmClient, db: Database, indexer: Indexer) -> None:
+async def login(message: Message, bot: Bot, lastfm: LastFmClient, db: Database, indexer: Indexer,
+                login_polls: KeyedTasks) -> None:
     if message.chat.type != "private":
         url = await create_start_link(bot, "login")
         await message.reply(
@@ -149,11 +53,9 @@ async def login(message: Message, bot: Bot, lastfm: LastFmClient, db: Database, 
             inline_keyboard=[[InlineKeyboardButton(text="Connect Last.fm", url=lastfm.auth_url(token))]]
         ),
     )
-    task = asyncio.create_task(
-        _poll_login(bot, prompt.chat.id, prompt.message_id, message.from_user.id, token, lastfm, db, indexer)
-    )
-    _login_tasks.add(task)
-    task.add_done_callback(_login_tasks.discard)
+    # One poll per person: a new /login replaces the previous one instead of adding another
+    login_polls.start(message.from_user.id, _poll_login(
+        bot, prompt.chat.id, prompt.message_id, message.from_user.id, token, lastfm, db, indexer))
 
 
 def _login_delay(attempt: int) -> float:
@@ -240,16 +142,14 @@ def _index_status(user, indexer: Indexer) -> str:
         return "History: <i>importing…</i>"
     if user.indexed_at is None:
         return "History: not imported (/update)"
-    updated = ago(int(user.updated_at.timestamp())) if user.updated_at else "never"
+    updated = ago(int(as_utc(user.updated_at).timestamp())) if user.updated_at else "never"
     return f"History: imported · updated {updated}"
 
 
 @router.message(Command("update", "index"))
 async def update(message: Message, command: CommandObject, db: Database, indexer: Indexer) -> None:
     """Port of IndexSlashCommands.update: fetch new scrobbles, or `/update full` to re-import."""
-    user = await db.get_user(message.from_user.id)
-    if user is None or not user.lastfm_username:
-        raise NotRegistered(NOT_REGISTERED_SELF)
+    user = await self_user(message, db)
 
     full = (command.args or "").strip().lower() in ("full", "force", "f")
     if indexer.is_importing(user.id):

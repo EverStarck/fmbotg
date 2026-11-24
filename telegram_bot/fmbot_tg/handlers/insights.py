@@ -2,20 +2,20 @@
 ArtistBuilders discoveries/artistpace and UserBuilder taste)."""
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from ..cache import TTLCache
-from ..config import Settings
-from ..context import NOT_REGISTERED_SELF, NotRegistered, Target, UserFacingError, resolve_subject, resolve_target
+from ..members import Members
+from ..context import chat_title, resolve_subject, resolve_target, self_user
+from ..domain import Target, UserFacingError
 from ..db import Database
 from ..formatting import TELEGRAM_TEXT_LIMIT, esc, lastfm_user_url, link, num, plural, span, truncate, user_link
-from ..lastfm import LastFmClient, LastFmError
-from ..periods import ALL_TIME, MONTHLY, parse_period, year_period
-from ..playlogic import goal_amount, taste
+from ..lastfm import LastFmClient
+from ..periods import ALL_TIME, ALL_TIME_END, MONTHLY, parse_period, year_period
+from ..playlogic import goal_amount, goal_date, taste
 from ..stats import Stats, music_url
 
 router = Router(name="insights")
@@ -74,7 +74,7 @@ async def discoveries(message: Message, command: CommandObject, db: Database, st
     period, args = parse_period((command.args or "").split(), default=MONTHLY)
     target, _ = await resolve_target(message, args, db)
     await stats.require_index(target)
-    from_ts, to_ts = period.bounds(tz=target.tz) if period != ALL_TIME else (0, 2**62)
+    from_ts, to_ts = period.bounds(tz=target.tz)
     rows = await db.discoveries(target.user_id, from_ts, to_ts, limit=20)
     if not rows:
         raise UserFacingError(f"No new artists for {user_link(target.lastfm_username)} ({esc(period.label)}).")
@@ -110,11 +110,14 @@ async def artist_pace(message: Message, command: CommandObject, lastfm: LastFmCl
         raise UserFacingError(f"No plays on {esc(artist)} in this period ({esc(period.label)}).")
     days = max((now.timestamp() - start) / 86400, 1 / 24)
     per_day = count / days
-    goal_date = now + timedelta(days=(goal - total) / per_day)
+    reached = goal_date(now, goal - total, per_day)
+    if reached is None:
+        raise UserFacingError(f"At {per_day:,.2f} {esc(artist)} plays a day, <b>{num(goal)}</b> is more than "
+                              "200 years away.")
     suffix = "" if period == ALL_TIME else f" ({esc(period.label)})"
     await message.reply(
         f"At this pace, {user_link(target.lastfm_username)} will reach <b>{num(goal)}</b> plays on "
-        f"{link(artist, music_url(artist))} on <b>{goal_date:%d %B %Y}</b>.\n"
+        f"{link(artist, music_url(artist))} on <b>{reached:%d %B %Y}</b>.\n"
         f"<i>Currently {num(total)} plays; {per_day:,.2f} per day over {span(days)}{suffix}.</i>"
     )
 
@@ -133,9 +136,7 @@ async def _artist_for_pace(rest: list[str], target: Target, lastfm: LastFmClient
 @router.message(Command("taste", "t", "compare"))
 async def taste_cmd(message: Message, command: CommandObject, db: Database, stats: Stats) -> None:
     """Compare your top artists with someone else's (port of UserBuilder.TasteAsync)."""
-    caller = await db.get_user(message.from_user.id)
-    if caller is None or not caller.lastfm_username:
-        raise NotRegistered(NOT_REGISTERED_SELF)
+    caller = await self_user(message, db)
     period, args = parse_period((command.args or "").split(), default=ALL_TIME)
     other, _ = await resolve_target(message, args, db)
     if other.is_self:
@@ -191,9 +192,7 @@ async def gaps(message: Message, command: CommandObject, db: Database, stats: St
 @router.message(Command("search", "find"))
 async def search(message: Message, command: CommandObject, db: Database, stats: Stats) -> None:
     """Search your own listening history (port of PlayBuilders.SearchAsync)."""
-    caller = await db.get_user(message.from_user.id)
-    if caller is None or not caller.lastfm_username:
-        raise NotRegistered(NOT_REGISTERED_SELF)
+    caller = await self_user(message, db)
     target = Target.from_user(caller, True)
     query = (command.args or "").strip()
     if len(query) < 2:
@@ -229,8 +228,8 @@ async def artist_overview(message: Message, command: CommandObject, lastfm: Last
     if not total:
         raise UserFacingError(f"{user_link(target.lastfm_username)} has never played {esc(artist)}.")
 
-    tracks = await db.top_from_plays(target.user_id, "tracks", 0, 2**62, limit=TOP_N, artist=artist)
-    albums = await db.top_from_plays(target.user_id, "albums", 0, 2**62, limit=TOP_N, artist=artist)
+    tracks = await db.top_from_plays(target.user_id, "tracks", 0, ALL_TIME_END, limit=TOP_N, artist=artist)
+    albums = await db.top_from_plays(target.user_id, "albums", 0, ALL_TIME_END, limit=TOP_N, artist=artist)
     per_year: dict[int, int] = {}
     for ts in await db.subject_timestamps(target.user_id, "artist", (artist,)):
         year_ = datetime.fromtimestamp(ts, target.tz).year
@@ -251,48 +250,31 @@ async def artist_overview(message: Message, command: CommandObject, lastfm: Last
     await message.reply(truncate("\n".join(lines), TELEGRAM_TEXT_LIMIT))
 
 
-_affinity_cache = TTLCache(ttl_seconds=1800, max_items=5_000)
 AFFINITY_TOP = 500
 
 
 @router.message(Command("affinity", "aff", "neighbors"))
-async def affinity(message: Message, db: Database, stats: Stats, settings: Settings) -> None:
+async def affinity(message: Message, db: Database, stats: Stats, members: Members) -> None:
     """Who in this group has the most similar taste to you (port of ArtistBuilders.AffinityAsync)."""
     if message.chat.type == "private":
         raise UserFacingError("Affinity compares you with the members of a group. Use it in a group chat.")
-    caller = await db.get_user(message.from_user.id)
-    if caller is None or not caller.lastfm_username:
-        raise NotRegistered(NOT_REGISTERED_SELF)
-    members = [m for m in await db.chat_lastfm_users(message.chat.id, settings.whoknows_max_members)
-               if m.id != caller.id]
-    if not members:
+    caller = await self_user(message, db)
+    others_here = [m for m in await members.linked(message.chat.id) if m.id != caller.id]
+    if not others_here:
         raise UserFacingError("Nobody else in this chat has connected Last.fm yet.")
 
-    async def top_artists(user) -> list[tuple[str, int]] | None:
-        key = user.lastfm_username.lower()
-        cached = _affinity_cache.get(key)
-        if cached is not None:
-            return cached
-        try:
-            result = await stats.top(Target.from_user(user, False), "artists", ALL_TIME, page=1, page_size=AFFINITY_TOP)
-        except LastFmError:
-            return None
-        rows = [(item.name, item.playcount) for item in result.items]
-        _affinity_cache.set(key, rows)
-        return rows
-
-    own = await top_artists(caller)
+    own = await stats.all_time_artists(caller, AFFINITY_TOP)
     if not own:
         raise UserFacingError("Couldn't load your top artists from Last.fm.")
-    others = await asyncio.gather(*(top_artists(m) for m in members))
-    scores = sorted(((taste(own, theirs), m) for m, theirs in zip(members, others) if theirs),
+    others = await asyncio.gather(*(stats.all_time_artists(m, AFFINITY_TOP) for m in others_here))
+    scores = sorted(((taste(own, theirs), m) for m, theirs in zip(others_here, others) if theirs),
                     key=lambda pair: -pair[0].similarity)
 
-    lines = [f"<b>Taste neighbours of {esc(caller.display_name or caller.lastfm_username)}</b> in "
-             f"{esc(message.chat.title or 'this chat')}", ""]
+    lines = [f"<b>Taste neighbours of {esc(caller.shown_name)}</b> in "
+             f"{esc(chat_title(message))}", ""]
     for i, (match, member) in enumerate(scores[:15], 1):
         shared = ", ".join(esc(name) for name, _, _ in match.shared[:3])
-        lines.append(f"{i}. {link(member.display_name or member.lastfm_username, lastfm_user_url(member.lastfm_username))}"
+        lines.append(f"{i}. {link(member.shown_name, lastfm_user_url(member.lastfm_username))}"
                      f" · <b>{match.similarity}%</b>" + (f" <i>({shared})</i>" if shared else ""))
     lines += ["", f"<i>Based on all-time top {AFFINITY_TOP} artists.</i>"]
     await message.reply(truncate("\n".join(lines), TELEGRAM_TEXT_LIMIT))

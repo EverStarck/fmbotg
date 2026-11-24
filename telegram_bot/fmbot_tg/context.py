@@ -5,88 +5,79 @@ caller by default, the author of the replied-to message, an @handle of a registe
 or a raw Last.fm name written as `lfm:name`.
 """
 
-from dataclasses import dataclass, field
-from datetime import timezone, tzinfo
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Awaitable, Callable
 
-from aiogram.types import Message
+from aiogram import BaseMiddleware
+from aiogram.types import Message, TelegramObject
 
 from .db import Database, User
+from .domain import NOT_REGISTERED_SELF, NotRegistered, Target, UserFacingError
+from .formatting import esc
 from .lastfm import LastFmClient
-
-
-class UserFacingError(Exception):
-    """Raised from handlers; the message is sent to the user as-is (HTML)."""
-
-
-class NotRegistered(UserFacingError):
-    pass
-
-
-STALE_BUTTON = "This message is too old for its buttons. Run the command again."
-
-
-NOT_REGISTERED_SELF = (
-    "You haven't connected your Last.fm account yet.\n"
-    "Send /login to me in a private chat to get started."
-)
-
-
-@dataclass(frozen=True)
-class Target:
-    lastfm_username: str
-    session_key: str | None
-    is_self: bool
-    user_id: int | None = None  # set for registered users
-    indexed: bool = False  # full scrobble history is in the play index
-    tz: tzinfo = field(default=timezone.utc)
-    fm_mode: str = "full"
-    fm_template: str | None = None
-
-    @classmethod
-    def from_user(cls, user: User, is_self: bool) -> "Target":
-        return cls(user.lastfm_username, user.session_key, is_self, user.id, user.indexed_at is not None,
-                   load_timezone(user.timezone), user.fm_mode or "full", user.fm_template)
-
-
-def load_timezone(name: str | None) -> tzinfo:
-    if not name:
-        return timezone.utc
-    try:
-        return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError):
-        return timezone.utc
 
 
 def _target_from_user(user: User | None, is_self: bool, who: str) -> Target:
     if user is None or not user.lastfm_username:
-        raise NotRegistered(NOT_REGISTERED_SELF if is_self else f"{who} hasn't connected Last.fm to this bot.")
+        # `who` is a Telegram name or a typed @handle: escape it, replies are HTML
+        raise NotRegistered(NOT_REGISTERED_SELF if is_self else f"{esc(who)} hasn't connected Last.fm to this bot.")
     return Target.from_user(user, is_self)
 
 
-# Per-chat nicknames from FM_ALIASES in .env (chat id -> {nickname: Last.fm username}), set at startup.
-_chat_aliases: dict[int, dict[str, str]] = {}
+class Aliases:
+    """Per-chat nicknames from FM_ALIASES in .env: chat id -> {nickname: Last.fm username}."""
+
+    def __init__(self, by_chat: dict[int, dict[str, str]] | None = None):
+        self._by_chat = {chat: {nick.lower(): user for nick, user in names.items()}
+                         for chat, names in (by_chat or {}).items()}
+
+    def apply(self, chat_id: int, args: list[str], search: bool = False) -> list[str]:
+        """Replace a nickname with `lfm:<username>`.
+
+        Without a search, any word can be a nickname. Commands that also take a search ("/artist red hot
+        chili peppers") only check the last word, so names at the start of a search aren't taken as people.
+        """
+        names = self._by_chat.get(chat_id)
+        if not names or not args:
+            return list(args)
+        for index in ([len(args) - 1] if search else range(len(args))):
+            nickname = args[index].lower()
+            if nickname in names:
+                return args[:index] + [f"lfm:{names[nickname]}"] + args[index + 1:]
+        return list(args)
 
 
-def configure_aliases(aliases: dict[int, dict[str, str]]) -> None:
-    _chat_aliases.clear()
-    _chat_aliases.update(aliases)
+# The dispatcher's nicknames while it handles an update (set by AliasMiddleware), so the many
+# resolve_target callers don't each need them passed in, and two dispatchers never share them.
+_current_aliases: ContextVar[Aliases] = ContextVar("aliases", default=Aliases())
+
+
+@contextmanager
+def use_aliases(aliases: Aliases):
+    token = _current_aliases.set(aliases)
+    try:
+        yield
+    finally:
+        _current_aliases.reset(token)
+
+
+class AliasMiddleware(BaseMiddleware):
+    def __init__(self, aliases: Aliases):
+        self._aliases = aliases
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        with use_aliases(self._aliases):
+            return await handler(event, data)
 
 
 def apply_alias(chat_id: int, args: list[str], search: bool = False) -> list[str]:
-    """Replace a nickname with `lfm:<username>`.
-
-    Without a search, any word can be a nickname. Commands that also take a search ("/artist red hot
-    chili peppers") only check the last word, so names at the start of a search aren't taken as people.
-    """
-    names = _chat_aliases.get(chat_id)
-    if not names or not args:
-        return list(args)
-    for index in ([len(args) - 1] if search else range(len(args))):
-        nickname = args[index].lower()
-        if nickname in names:
-            return args[:index] + [f"lfm:{names[nickname]}"] + args[index + 1:]
-    return list(args)
+    return _current_aliases.get().apply(chat_id, args, search)
 
 
 async def resolve_target(message: Message, args: list[str], db: Database,
@@ -150,6 +141,16 @@ async def self_user(message: Message, db: Database) -> User:
     if user is None or not user.lastfm_username:
         raise NotRegistered(NOT_REGISTERED_SELF)
     return user
+
+
+async def self_target(message: Message, db: Database) -> Target:
+    """The caller as a Target, for commands that are always about yourself."""
+    return Target.from_user(await self_user(message, db), True)
+
+
+def chat_title(message: Message, fallback: str = "this chat") -> str:
+    """The group's name for headings (unescaped)."""
+    return message.chat.title or fallback
 
 
 def require_group(message: Message, what: str = "This command") -> None:

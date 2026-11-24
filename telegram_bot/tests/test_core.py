@@ -89,24 +89,21 @@ async def test_whoknows_members_only_include_linked_users_in_that_chat(tmp_path)
 
 
 def test_cover_url_drops_the_size_segment():
-    from fmbot_tg.handlers.info import full_size_image
+    from fmbot_tg.lastfm import full_size_image
     url = "https://lastfm.freetls.fastly.net/i/u/300x300/abc.jpg"
     assert full_size_image(url) == "https://lastfm.freetls.fastly.net/i/u/abc.jpg"
 
 
 def test_nicknames_only_apply_in_their_chat_and_only_as_last_word_of_a_search():
     from fmbot_tg.config import parse_fm_aliases
-    from fmbot_tg.context import apply_alias, configure_aliases
-    configure_aliases(parse_fm_aliases('{"-100123": {"Alex": "alex_lfm", "red": "RedPlays"}}'))
-    try:
-        assert apply_alias(-100123, ["monthly", "ALEX"]) == ["monthly", "lfm:alex_lfm"]
-        assert apply_alias(-100999, ["alex"]) == ["alex"]
-        # In a search, "red" at the start is part of the search; at the end it's the person
-        assert apply_alias(-100123, "red hot chili peppers".split(), search=True) == "red hot chili peppers".split()
-        assert apply_alias(-100123, ["radiohead", "red"], search=True) == ["radiohead", "lfm:RedPlays"]
-        assert parse_fm_aliases("") == {}
-    finally:
-        configure_aliases({})
+    from fmbot_tg.context import Aliases
+    aliases = Aliases(parse_fm_aliases('{"-100123": {"Alex": "alex_lfm", "red": "RedPlays"}}'))
+    assert aliases.apply(-100123, ["monthly", "ALEX"]) == ["monthly", "lfm:alex_lfm"]
+    assert aliases.apply(-100999, ["alex"]) == ["alex"]
+    # In a search, "red" at the start is part of the search; at the end it's the person
+    assert aliases.apply(-100123, "red hot chili peppers".split(), search=True) == "red hot chili peppers".split()
+    assert aliases.apply(-100123, ["radiohead", "red"], search=True) == ["radiohead", "lfm:RedPlays"]
+    assert parse_fm_aliases("") == {}
 
 
 def test_malformed_fm_aliases_fail_at_startup_with_a_clear_message():
@@ -114,3 +111,21 @@ def test_malformed_fm_aliases_fail_at_startup_with_a_clear_message():
     from fmbot_tg.config import parse_fm_aliases
     with pytest.raises(RuntimeError, match="FM_ALIASES must be JSON"):
         parse_fm_aliases('{"not-a-chat-id": {"a": "b"}}')
+
+
+async def test_lastfm_requests_are_spaced_to_the_rate_limit():
+    import asyncio
+    import time
+
+    import httpx
+
+    from fmbot_tg.lastfm import LastFmClient
+
+    def api(request):
+        return httpx.Response(200, json={"user": {"name": "x"}})
+
+    client = LastFmClient("k", "s", http=httpx.AsyncClient(transport=httpx.MockTransport(api)), requests_per_second=50)
+    started = time.monotonic()
+    await asyncio.gather(*(client.user_info("x") for _ in range(6)))
+    assert time.monotonic() - started >= 5 / 50 * 0.9  # six requests need five gaps of 20 ms
+    await client.close()

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Awaitable, Callable
 
-from .context import Target
+from .domain import top_kind, Target
 from .db import Database
 from .formatting import duration, esc, lastfm_user_url, num
 from .lastfm import LastFmClient, LastFmError, Scrobble, as_list
@@ -81,7 +81,7 @@ def _subject(ctx: TemplateContext, kind: str) -> tuple[str, ...]:
 
 def _music_url(ctx: TemplateContext, kind: str) -> str:
     subject = _subject(ctx, kind)
-    return music_url(subject[0], subject[1] if len(subject) > 1 else None, kind + "s")
+    return music_url(subject[0], subject[1] if len(subject) > 1 else None, top_kind(kind))
 
 
 for _kind in ("artist", "album", "track"):

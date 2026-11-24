@@ -8,9 +8,10 @@ groups where the bot is an admin, any message counts as a guess.
 import asyncio
 import logging
 import time
-from collections import deque
 from dataclasses import dataclass, field
-from itertools import count
+
+import httpx
+from PIL import UnidentifiedImageError
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -21,24 +22,23 @@ from aiogram.types import (
     ReactionTypeEmoji,
 )
 
-from .. import moderation
-from ..context import UserFacingError, self_user
-from ..db import Database, name_key
+from ..context import self_user
+from ..domain import UserFacingError
+from ..db import Database
+from ..names import name_key
 from ..formatting import esc, plural
 from ..games import (
-    JUMBLE_SECONDS, PIXELATION_LEVELS, PIXELATION_SECONDS, answer_is_right, first_letter_hint, normalize_answer,
-    pick, pixelate, scramble,
+    JUMBLE_SECONDS, PIXELATION_LEVELS, PIXELATION_SECONDS, GameSessions, answer_is_right, first_letter_hint, pick,
+    pixelate, scramble,
 )
-from ..lastfm import LastFmClient, LastFmError, as_list
+from ..lastfm import LastFmClient, LastFmError, as_list, full_size_image
+from ..moderation import Moderation
 from ..metadata import Metadata, flag
-from .info import full_size_image
 
 log = logging.getLogger(__name__)
 router = Router(name="games")
 
 CANDIDATES = 250  # top artists/albums a game picks from
-RECENT_ANSWERS = 30  # per person, skipped in their next games
-_ids = count(1)
 
 
 class GameButton(CallbackData, prefix="gm"):
@@ -63,13 +63,17 @@ class Game:
     timer: asyncio.Task | None = None
     done: bool = False
 
+    @property
+    def subject(self) -> str:
+        return "artist" if self.kind == "jumble" else "album"
 
-_games: dict[int, Game] = {}  # chat id -> running game
-_recent: dict[int, deque] = {}  # telegram user id -> recent answers (normalised)
+    @property
+    def seconds(self) -> int:
+        return JUMBLE_SECONDS if self.kind == "jumble" else PIXELATION_SECONDS
 
-
-def _remember(user_id: int, answer: str) -> None:
-    _recent.setdefault(user_id, deque(maxlen=RECENT_ANSWERS)).append(normalize_answer(answer))
+    @property
+    def private(self) -> bool:
+        return self.chat_id > 0
 
 
 def _buttons(game: Game) -> InlineKeyboardMarkup:
@@ -91,25 +95,21 @@ def _text(game: Game, private: bool) -> str:
             f"<i>{how} {PIXELATION_SECONDS} seconds; it gets clearer as time passes.</i>")
 
 
-def _ensure_free(chat_id: int) -> None:
-    if chat_id in _games:
-        raise UserFacingError("A game is already running here. Finish it first, or give up with its button.")
-
-
-async def _finish(bot: Bot, game: Game, winner: str | None = None, guess_message: Message | None = None) -> None:
+async def _finish(bot: Bot, sessions: GameSessions, game: Game, winner: str | None = None,
+                  guess_message: Message | None = None) -> None:
     if game.done:
         return
     game.done = True
-    _games.pop(game.chat_id, None)
+    sessions.release(game)
     if game.timer and game.timer is not asyncio.current_task():
         game.timer.cancel()
 
     elapsed = time.monotonic() - game.started
-    subject = "artist" if game.kind == "jumble" else "album"
+    subject = game.subject
     answer = f"<b>{esc(game.answer)}</b>" + (f" by {esc(game.artist)}" if game.kind == "pixelation" else "")
     if winner:
         text = f"✅ {esc(winner)} got it in {elapsed:.1f}s! The {subject} was {answer}."
-    elif winner is None and guess_message is None and elapsed >= _limit(game) - 1:
+    elif winner is None and guess_message is None and elapsed >= game.seconds - 1:
         text = f"⏰ Time's up! The {subject} was {answer}."
     else:
         text = f"🏳️ Game over. The {subject} was {answer}."
@@ -132,11 +132,7 @@ async def _finish(bot: Bot, game: Game, winner: str | None = None, guess_message
         await bot.send_message(game.chat_id, text, reply_to_message_id=game.message_id)
 
 
-def _limit(game: Game) -> int:
-    return JUMBLE_SECONDS if game.kind == "jumble" else PIXELATION_SECONDS
-
-
-async def _run_timer(bot: Bot, game: Game) -> None:
+async def _run_timer(bot: Bot, sessions: GameSessions, game: Game) -> None:
     try:
         if game.kind == "pixelation":
             steps = len(PIXELATION_LEVELS) - 1
@@ -148,12 +144,13 @@ async def _run_timer(bot: Bot, game: Game) -> None:
             await asyncio.sleep(PIXELATION_SECONDS / (steps + 1))
         else:
             await asyncio.sleep(JUMBLE_SECONDS)
-        await _finish(bot, game)
+        await _finish(bot, sessions, game)
     except asyncio.CancelledError:
         pass
     except Exception:
         log.exception("Game timer failed")
-        _games.pop(game.chat_id, None)
+        game.done = True
+        sessions.release(game)
 
 
 async def _clearer(bot: Bot, game: Game) -> None:
@@ -161,11 +158,13 @@ async def _clearer(bot: Bot, game: Game) -> None:
         return
     game.level += 1
     image = await asyncio.to_thread(pixelate, game.cover, PIXELATION_LEVELS[game.level])
+    if game.done:  # finished while we were drawing: don't cover up the revealed album
+        return
     try:
         await bot.edit_message_media(
             chat_id=game.chat_id, message_id=game.message_id,
             media=InputMediaPhoto(media=BufferedInputFile(image, "cover.jpg"),
-                                  caption=_text(game, game.chat_id > 0)),
+                                  caption=_text(game, game.private)),
             reply_markup=_buttons(game))
     except TelegramBadRequest:
         pass
@@ -197,48 +196,66 @@ async def _artist_hints(artist: str, plays: int, lastfm: LastFmClient, metadata:
     return hints + extras
 
 
-@router.message(Command("jumble", "j"))
-async def jumble(message: Message, lastfm: LastFmClient, db: Database, metadata: Metadata, bot: Bot) -> None:
-    _ensure_free(message.chat.id)
-    me = await self_user(message, db)
-    top = await lastfm.top(me.lastfm_username, "artists", "overall", limit=CANDIDATES)
-    chosen = pick([(i.name, i.playcount) for i in top.items], set(_recent.get(message.from_user.id, ())))
-    if chosen is None:
-        raise UserFacingError("You need some more scrobbled artists to play jumble.")
-    _ensure_free(message.chat.id)  # someone may have started one while we looked things up
-    artist, plays = chosen
-    hints = await _artist_hints(artist, plays, lastfm, metadata)
-    shown = min(3, len(hints) - 1)
-    game = Game(next(_ids), "jumble", message.chat.id, artist, artist, hints, shown, scrambled=scramble(artist))
-    _ensure_free(message.chat.id)
-    _games[message.chat.id] = game
-    _remember(message.from_user.id, artist)
-    sent = await message.answer(_text(game, message.chat.type == "private"), reply_markup=_buttons(game))
+async def _start(bot: Bot, sessions: GameSessions, game: Game, send) -> None:
+    """Register the game, send it and start its timer. If sending fails, the chat is freed again,
+    so a failed start can't leave a game nobody can finish."""
+    sessions.claim(game)
+    try:
+        sent = await send()
+    except BaseException:
+        game.done = True
+        sessions.release(game)
+        raise
     game.message_id = sent.message_id
     game.started = time.monotonic()
-    game.timer = asyncio.create_task(_run_timer(bot, game))
+    game.timer = asyncio.create_task(_run_timer(bot, sessions, game))
+
+
+@router.message(Command("jumble", "j"))
+async def jumble(message: Message, lastfm: LastFmClient, db: Database, metadata: Metadata, bot: Bot,
+                 game_sessions: GameSessions) -> None:
+    game_sessions.ensure_free(message.chat.id)
+    me = await self_user(message, db)
+    top = await lastfm.top(me.lastfm_username, "artists", "overall", limit=CANDIDATES)
+    chosen = pick([(i.name, i.playcount) for i in top.items], game_sessions.recent(message.from_user.id))
+    if chosen is None:
+        raise UserFacingError("You need some more scrobbled artists to play jumble.")
+    artist, plays = chosen
+    hints = await _artist_hints(artist, plays, lastfm, metadata)
+    game = Game(game_sessions.new_id(), "jumble", message.chat.id, artist, artist, hints, min(3, len(hints) - 1),
+                scrambled=scramble(artist))
+    await _start(bot, game_sessions, game,
+                 lambda: message.answer(_text(game, game.private), reply_markup=_buttons(game)))
+    game_sessions.remember(message.from_user.id, artist)
+
+
+async def _fetch_cover(lastfm: LastFmClient, item) -> tuple[bytes, bytes] | None:
+    """(original cover, first pixelated image), or None if the cover can't be downloaded or read."""
+    try:
+        response = await lastfm.http.get(full_size_image(item.image), timeout=15)
+        response.raise_for_status()
+        return response.content, await asyncio.to_thread(pixelate, response.content, PIXELATION_LEVELS[0])
+    except (httpx.HTTPError, UnidentifiedImageError, OSError):
+        return None
 
 
 @router.message(Command("pixelation", "pixel", "px"))
-async def pixelation(message: Message, lastfm: LastFmClient, db: Database, metadata: Metadata, bot: Bot) -> None:
-    _ensure_free(message.chat.id)
+async def pixelation(message: Message, lastfm: LastFmClient, db: Database, metadata: Metadata, bot: Bot,
+                     moderation: Moderation, game_sessions: GameSessions) -> None:
+    game_sessions.ensure_free(message.chat.id)
     me = await self_user(message, db)
     top = await lastfm.top(me.lastfm_username, "albums", "overall", limit=CANDIDATES)
     covers = {(i.name, i.playcount): i for i in top.items if i.image and not moderation.is_censored(i.artist, i.name)}
-    recent = set(_recent.get(message.from_user.id, ()))
-    album = None
-    for _ in range(3):  # a cover can fail to download; try another album
+    recent = game_sessions.recent(message.from_user.id)
+    album = images = None
+    for _ in range(3):  # a cover can fail to download or be broken; try another album
         chosen = pick(list(covers), recent)
         if chosen is None:
             break
         item = covers.pop(chosen)
-        try:
-            response = await lastfm.http.get(full_size_image(item.image), timeout=15)
-            response.raise_for_status()
-            album, image = item, response.content
+        if images := await _fetch_cover(lastfm, item):
+            album = item
             break
-        except Exception:
-            continue
     if album is None:
         raise UserFacingError("You need some more scrobbled albums with covers to play pixelation.")
 
@@ -248,30 +265,27 @@ async def pixelation(message: Message, lastfm: LastFmClient, db: Database, metad
              f"By an artist starting with <code>{esc(first_letter_hint(album.artist or '?'))}</code>",
              f"The album starts with <code>{esc(first_letter_hint(album.name))}</code>",
              f"By <b>{esc(album.artist or '?')}</b>"]
-    _ensure_free(message.chat.id)
-    game = Game(next(_ids), "pixelation", message.chat.id, album.name, album.artist or "", hints, 1, cover=image)
-    _games[message.chat.id] = game
-    _remember(message.from_user.id, album.name)
-    first = await asyncio.to_thread(pixelate, image, PIXELATION_LEVELS[0])
-    sent = await message.answer_photo(BufferedInputFile(first, "cover.jpg"),
-                                      caption=_text(game, message.chat.type == "private"), reply_markup=_buttons(game))
-    game.message_id = sent.message_id
-    game.started = time.monotonic()
-    game.timer = asyncio.create_task(_run_timer(bot, game))
+    cover, first = images
+    game = Game(game_sessions.new_id(), "pixelation", message.chat.id, album.name, album.artist or "", hints, 1,
+                cover=cover)
+    await _start(bot, game_sessions, game, lambda: message.answer_photo(
+        BufferedInputFile(first, "cover.jpg"), caption=_text(game, game.private), reply_markup=_buttons(game)))
+    game_sessions.remember(message.from_user.id, album.name)
 
 
 # --- playing --------------------------------------------------------------------------------
 
 @router.callback_query(GameButton.filter())
-async def game_button(query: CallbackQuery, callback_data: GameButton, bot: Bot) -> None:
-    game = next((g for g in _games.values() if g.id == callback_data.game), None)
+async def game_button(query: CallbackQuery, callback_data: GameButton, bot: Bot,
+                      game_sessions: GameSessions) -> None:
+    game = game_sessions.by_id(callback_data.game)
     if game is None:
         await query.answer("This game has ended.")
         return
-    private = game.chat_id > 0
+    private = game.private
     if callback_data.action == "g":
         await query.answer()
-        await _finish(bot, game, winner="")
+        await _finish(bot, game_sessions, game, winner="")
         return
     if callback_data.action == "h":
         if game.shown >= len(game.hints):
@@ -297,18 +311,18 @@ async def game_button(query: CallbackQuery, callback_data: GameButton, bot: Bot)
 class GuessFilter(Filter):
     """A plain text message in a chat with a running game."""
 
-    async def __call__(self, message: Message) -> bool:
-        return (message.chat.id in _games and bool(message.text) and not message.text.startswith("/")
-                and message.from_user is not None and not message.from_user.is_bot)
+    async def __call__(self, message: Message, game_sessions: GameSessions) -> bool:
+        return (game_sessions.in_chat(message.chat.id) is not None and bool(message.text)
+                and not message.text.startswith("/") and message.from_user is not None and not message.from_user.is_bot)
 
 
 @router.message(GuessFilter(), F.text)
-async def guess(message: Message, bot: Bot) -> None:
-    game = _games.get(message.chat.id)
+async def guess(message: Message, bot: Bot, game_sessions: GameSessions) -> None:
+    game = game_sessions.in_chat(message.chat.id)
     if game is None or game.done:
         return
     if answer_is_right(game.answer, message.text):
-        await _finish(bot, game, winner=message.from_user.full_name, guess_message=message)
+        await _finish(bot, game_sessions, game, winner=message.from_user.full_name, guess_message=message)
         return
     # Only react to clear guesses, so ordinary chat in groups where we see everything stays untouched
     replied = message.reply_to_message and message.reply_to_message.message_id == game.message_id

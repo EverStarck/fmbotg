@@ -81,3 +81,35 @@ async def test_shortcuts_expand_with_extra_words_but_never_shadow_commands(tmp_p
     shortcuts.forget(7)
     assert await shortcuts.expand(7, "/mine") is None
     await db.close()
+
+
+def test_short_answers_must_be_guessed_exactly():
+    assert answer_is_right("Air", "air")
+    assert not answer_is_right("Air", "not fair")  # ordinary chat mustn't win
+    assert answer_is_right("Radiohead", "it's radiohead!")
+
+
+def test_pace_far_in_the_future_has_no_date():
+    from fmbot_tg.playlogic import goal_date
+    now = datetime(2026, 11, 23, tzinfo=timezone.utc)
+    assert goal_date(now, 1_000, 10).date().isoformat() == "2027-03-03"  # 100 days
+    assert goal_date(now, 10**9, 0.001) is None  # would overflow a date
+
+
+async def test_autoposts_pause_when_the_bot_was_removed_from_the_group(tmp_path):
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import GetChat
+
+    from fmbot_tg.autopost import Autoposter
+    from fmbot_tg.members import Members
+
+    class KickedBot:
+        async def get_chat(self, chat_id):
+            raise TelegramForbiddenError(GetChat(chat_id=chat_id), "Forbidden: bot was kicked from the group chat")
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'a.db'}")
+    await db.create_schema()
+    post = await db.add_autopost(-100, "recap", "weekly", False, datetime(2026, 1, 1, tzinfo=timezone.utc))
+    await Autoposter(db, Members(db, 100)).post(post, KickedBot())
+    assert not (await db.autoposts(-100))[0].enabled
+    await db.close()

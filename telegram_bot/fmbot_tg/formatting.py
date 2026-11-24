@@ -82,3 +82,13 @@ def span(days: float) -> str:
         return plural(round(days), "day")
     hours = days * 24
     return plural(round(hours), "hour") if hours >= 1 else plural(max(1, round(hours * 60)), "minute")
+
+
+def ranked_items(items, bold_plays: bool = False) -> list[str]:
+    """'1. Name — Artist · 12' lines for top list items (anything with name, artist, url, playcount)."""
+    lines = []
+    for i, item in enumerate(items, 1):
+        by = f" — {esc(item.artist)}" if item.artist else ""
+        plays = f"<b>{num(item.playcount)}</b>" if bold_plays else num(item.playcount)
+        lines.append(f"{i}. {link(item.name, item.url)}{by} · {plays}")
+    return lines

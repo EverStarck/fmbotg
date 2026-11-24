@@ -3,42 +3,21 @@ pixelating and checking guesses. Telegram handling lives in handlers/games.py.""
 
 import io
 import random
-import re
-import unicodedata
+from collections import deque
 from collections.abc import Sequence
+from itertools import count
 
 from PIL import Image
+
+from .domain import UserFacingError
+from .names import normalize_answer, remove_edition_suffix
 
 JUMBLE_SECONDS = 25
 PIXELATION_SECONDS = 40
 # Pixel blocks across the cover, from unrecognisable to nearly clear
 PIXELATION_LEVELS = (6, 10, 16, 26, 42)
-
-_REPLACEMENTS = {"Ø": "O", "ø": "o", "ß": "ss", "æ": "ae", "Æ": "Ae", "å": "a", "Å": "A", "Λ": "A",
-                 "&": "and", "…": "..."}
-_DROPPED = set("?!'’‘:-()/\" .,")
-_EDITION = re.compile(
-    r"\s*[(\[][^)\]]*(deluxe|edition|remaster|expanded|anniversary|version|bonus|explicit)[^)\]]*[)\]]\s*$"
-    r"|\s+-\s+[^-]*(deluxe|edition|remaster|expanded|anniversary|version)[^-]*$",
-    re.IGNORECASE,
-)
-
-
-def remove_edition_suffix(name: str) -> str:
-    """'OK Computer (Remastered)' -> 'OK Computer' (port of StringExtensions.RemoveEditionSuffix)."""
-    previous = None
-    while previous != name:
-        previous, name = name, _EDITION.sub("", name)
-    return name
-
-
-def normalize_answer(text: str) -> str:
-    """Lowercase, no accents, no punctuation or spaces (port of GameService.NormalizeAnswer)."""
-    text = "".join(_REPLACEMENTS.get(c, c) for c in text.strip())
-    text = unicodedata.normalize("NFD", text)
-    text = "".join(c for c in text if unicodedata.category(c) != "Mn" and c not in _DROPPED)
-    return unicodedata.normalize("NFC", text).lower()
-
+MIN_CONTAINED_LENGTH = 5  # shorter answers must be guessed exactly
+RECENT_ANSWERS = 30  # per person, skipped in their next games
 
 def levenshtein(a: str, b: str) -> int:
     previous = list(range(len(b) + 1))
@@ -56,7 +35,9 @@ def answer_is_right(correct: str, guess: str) -> bool:
     given = normalize_answer(remove_edition_suffix(guess))
     if not given:
         return False
-    if any(w == given or w in given for w in wanted):
+    # The answer inside a longer guess ("it's radiohead!") counts, but not for very short answers,
+    # or ordinary chat like "not fair" would win a game whose answer is "Air"
+    if any(w == given or (len(w) >= MIN_CONTAINED_LENGTH and w in given) for w in wanted):
         return True
     distance = min(levenshtein(given, w) for w in wanted)
     return (len(given) > 4 and distance == 1) or (len(given) > 10 and distance == 2)
@@ -112,3 +93,46 @@ def pixelate(image: bytes, blocks: int) -> bytes:
     out = io.BytesIO()
     small.resize((size, size), Image.Resampling.NEAREST).save(out, "JPEG", quality=85)
     return out.getvalue()
+
+
+class GameSessions:
+    """Running games (one per chat) and each person's recent answers, so games don't repeat.
+
+    Games live in memory only; a restart ends them.
+    """
+
+    def __init__(self):
+        self._by_chat: dict[int, object] = {}
+        self._by_id: dict[int, object] = {}
+        self._recent: dict[int, deque] = {}
+        self._ids = count(1)
+
+    def new_id(self) -> int:
+        return next(self._ids)
+
+    def ensure_free(self, chat_id: int) -> None:
+        if chat_id in self._by_chat:
+            raise UserFacingError("A game is already running here. Finish it first, or give up with its button.")
+
+    def claim(self, game) -> None:
+        """Register a game for its chat, or raise if one is already running there."""
+        self.ensure_free(game.chat_id)
+        self._by_chat[game.chat_id] = game
+        self._by_id[game.id] = game
+
+    def release(self, game) -> None:
+        if self._by_chat.get(game.chat_id) is game:
+            del self._by_chat[game.chat_id]
+        self._by_id.pop(game.id, None)
+
+    def in_chat(self, chat_id: int):
+        return self._by_chat.get(chat_id)
+
+    def by_id(self, game_id: int):
+        return self._by_id.get(game_id)
+
+    def remember(self, telegram_id: int, answer: str) -> None:
+        self._recent.setdefault(telegram_id, deque(maxlen=RECENT_ANSWERS)).append(normalize_answer(answer))
+
+    def recent(self, telegram_id: int) -> set[str]:
+        return set(self._recent.get(telegram_id, ()))

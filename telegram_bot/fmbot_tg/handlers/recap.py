@@ -10,22 +10,24 @@ from aiogram.filters import Command, CommandObject
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from ..chart_service import album_chart
 from ..charts import render_receipt
-from ..context import STALE_BUTTON, Target, UserFacingError, resolve_target
+from ..context import resolve_target
+from ..domain import STALE_BUTTON, Target, UserFacingError
 from ..db import Database
-from ..formatting import TELEGRAM_TEXT_LIMIT, esc, link, num, plural, truncate, user_link
+from ..formatting import TELEGRAM_TEXT_LIMIT, esc, num, plural, ranked_items, truncate, user_link
 from ..lastfm import LastFmClient, LastFmError
-from ..metadata import Metadata, by_country, by_genre, flag
+from ..dimensions import COUNTRY, GENRE, Dimension, artist_rows, category_lines, pending_note
+from ..metadata import Metadata
+from ..moderation import Moderation
 from ..periods import ALL_TIME, YEARLY, Period, parse_period, period_from_key
 from ..stats import Stats
-from .chart import album_chart
 
 router = Router(name="recap")
 
 # RecapPage, minus bot stats (no command log yet)
 VIEWS = {"o": "Overview", "a": "Artists", "b": "Albums", "t": "Tracks", "g": "Genres", "n": "Countries",
          "d": "Discoveries", "c": "Album chart"}
-KIND_BY_VIEW = {"a": "artists", "b": "albums", "t": "tracks"}
 
 
 class RecapView(CallbackData, prefix="rc"):
@@ -48,72 +50,72 @@ async def _new_artists(db: Database, target: Target, period: Period) -> list | N
     return await db.discoveries(target.user_id, from_ts, to_ts, limit=100_000)
 
 
+async def _overview(header: str, target: Target, period: Period, lastfm: LastFmClient, db: Database,
+                    stats: Stats, metadata: Metadata) -> list[str]:
+    scrobbles, artists, albums, tracks, new = await asyncio.gather(
+        _scrobbles(lastfm, target, period),
+        stats.top(target, "artists", period, page=1, page_size=3),
+        stats.top(target, "albums", period, page=1, page_size=3),
+        stats.top(target, "tracks", period, page=1, page_size=3),
+        _new_artists(db, target, period),
+    )
+    lines = [header, "", f"Scrobbles: <b>{num(scrobbles)}</b>"]
+    if period != ALL_TIME:
+        from_ts, to_ts = period.bounds(tz=target.tz)
+        lines[-1] += f" ({scrobbles / max(1, (to_ts - from_ts) / 86400):,.1f} per day)"
+    lines.append(f"Artists: <b>{num(artists.total)}</b> · albums: <b>{num(albums.total)}</b> · "
+                 f"tracks: <b>{num(tracks.total)}</b>")
+    if new is not None:
+        lines.append(f"New artists: <b>{num(len(new))}</b>")
+    for title, result in (("🎤 Top artists", artists), ("💿 Top albums", albums), ("🎶 Top tracks", tracks)):
+        if result.items:
+            lines += ["", f"<b>{title}</b>", *ranked_items(result.items)]
+    return lines
+
+
+def _top_view(kind: str):
+    async def render(header: str, target: Target, period: Period, lastfm: LastFmClient, db: Database,
+                     stats: Stats, metadata: Metadata) -> list[str]:
+        result = await stats.top(target, kind, period, page=1, page_size=15)
+        return [header, "", *(ranked_items(result.items, bold_plays=True) or ["Nothing here for this period."])]
+    return render
+
+
+def _dimension_view(dimension: Dimension):
+    async def render(header: str, target: Target, period: Period, lastfm: LastFmClient, db: Database,
+                     stats: Stats, metadata: Metadata) -> list[str]:
+        rows = await artist_rows(stats, target, period, dimension.top_artists)
+        lookup = await dimension.lookup(metadata, [a for a, _ in rows])
+        groups = dimension.aggregate(rows, lookup.values)
+        lines = [header, "", *(category_lines(dimension, groups, 12) or ["Nothing known yet for this period."])]
+        if note := pending_note(lookup, dimension):
+            lines += ["", note]
+        return lines
+    return render
+
+
+async def _discoveries(header: str, target: Target, period: Period, lastfm: LastFmClient, db: Database,
+                       stats: Stats, metadata: Metadata) -> list[str]:
+    new = await _new_artists(db, target, period)
+    if new is None:
+        return [header, "", "Discoveries need an imported history and a period other than all-time. "
+                            "Run /update to import it."]
+    lines = [header, "", f"<b>{plural(len(new), 'new artist')}</b>", ""]
+    for i, (artist, first, plays) in enumerate(new[:15], 1):
+        day = datetime.fromtimestamp(first, target.tz)
+        lines.append(f"{i}. {esc(artist)} · {plural(plays, 'play')} · <i>since {day:%d %b}</i>")
+    return lines
+
+
+# View code -> renderer; "c" (album chart) is a photo, handled in recap_view
+RENDERERS = {"o": _overview, "a": _top_view("artists"), "b": _top_view("albums"), "t": _top_view("tracks"),
+             "g": _dimension_view(GENRE), "n": _dimension_view(COUNTRY), "d": _discoveries}
+
+
 async def render_view(view: str, target: Target, period: Period, lastfm: LastFmClient, db: Database,
                       stats: Stats, metadata: Metadata) -> str:
-    user, label = user_link(target.lastfm_username), esc(period.label)
-    header = f"<b>Recap for {user}</b> · {label} · {VIEWS[view]}"
-
-    if view == "o":
-        scrobbles, artists, albums, tracks, new = await asyncio.gather(
-            _scrobbles(lastfm, target, period),
-            stats.top(target, "artists", period, page=1, page_size=3),
-            stats.top(target, "albums", period, page=1, page_size=3),
-            stats.top(target, "tracks", period, page=1, page_size=3),
-            _new_artists(db, target, period),
-        )
-        lines = [header, "", f"Scrobbles: <b>{num(scrobbles)}</b>"]
-        if period != ALL_TIME:
-            from_ts, to_ts = period.bounds(tz=target.tz)
-            lines[-1] += f" ({scrobbles / max(1, (to_ts - from_ts) / 86400):,.1f} per day)"
-        lines.append(f"Artists: <b>{num(artists.total)}</b> · albums: <b>{num(albums.total)}</b> · "
-                     f"tracks: <b>{num(tracks.total)}</b>")
-        if new is not None:
-            lines.append(f"New artists: <b>{num(len(new))}</b>")
-        for title, result in (("🎤 Top artists", artists), ("💿 Top albums", albums), ("🎶 Top tracks", tracks)):
-            if result.items:
-                lines += ["", f"<b>{title}</b>"]
-                for i, item in enumerate(result.items, 1):
-                    by = f" — {esc(item.artist)}" if item.artist else ""
-                    lines.append(f"{i}. {link(item.name, item.url)}{by} · {num(item.playcount)}")
-        return "\n".join(lines)
-
-    if view in KIND_BY_VIEW:
-        result = await stats.top(target, KIND_BY_VIEW[view], period, page=1, page_size=15)
-        lines = [header, ""]
-        for i, item in enumerate(result.items, 1):
-            by = f" — {esc(item.artist)}" if item.artist else ""
-            lines.append(f"{i}. {link(item.name, item.url)}{by} · <b>{num(item.playcount)}</b>")
-        return "\n".join(lines) if result.items else f"{header}\n\nNothing here for this period."
-
-    if view in ("g", "n"):
-        top = await stats.top(target, "artists", period, page=1, page_size=200 if view == "g" else 100)
-        rows = [(item.name, item.playcount) for item in top.items]
-        names = [a for a, _ in rows]
-        lookup = await (metadata.genres(names) if view == "g" else metadata.countries(names, max_new=100))
-        lines = [header, ""]
-        if view == "g":
-            for i, (genre, plays, artists) in enumerate(by_genre(rows, lookup.values)[:12], 1):
-                lines.append(f"{i}. <b>{esc(genre)}</b> · {num(plays)} · <i>{esc(', '.join(artists[:3]))}</i>")
-        else:
-            for i, (code, country, plays, artists) in enumerate(by_country(rows, lookup.values)[:12], 1):
-                lines.append(f"{i}. {flag(code)} <b>{esc(country)}</b> · {num(plays)} · <i>{esc(', '.join(artists[:3]))}</i>")
-        if len(lines) == 2:
-            lines.append("Nothing known yet for this period.")
-        if lookup.pending:
-            lines += ["", f"<i>Still looking up {plural(lookup.pending, 'artist')}; tap again in a minute.</i>"]
-        return "\n".join(lines)
-
-    if view == "d":
-        new = await _new_artists(db, target, period)
-        if new is None:
-            return (f"{header}\n\nDiscoveries need an imported history and a period other than all-time. "
-                    "Run /update to import it.")
-        lines = [header, "", f"<b>{plural(len(new), 'new artist')}</b>", ""]
-        for i, (artist, first, plays) in enumerate(new[:15], 1):
-            day = datetime.fromtimestamp(first, target.tz)
-            lines.append(f"{i}. {esc(artist)} · {plural(plays, 'play')} · <i>since {day:%d %b}</i>")
-        return "\n".join(lines)
-    raise ValueError(view)
+    header = f"<b>Recap for {user_link(target.lastfm_username)}</b> · {esc(period.label)} · {VIEWS[view]}"
+    return "\n".join(await RENDERERS[view](header, target, period, lastfm, db, stats, metadata))
 
 
 def _keyboard(current: str, period: Period, user: str) -> InlineKeyboardMarkup:
@@ -142,7 +144,7 @@ async def recap(message: Message, command: CommandObject, lastfm: LastFmClient, 
 
 @router.callback_query(RecapView.filter(F.view.in_(VIEWS)))
 async def recap_view(query: CallbackQuery, callback_data: RecapView, lastfm: LastFmClient, db: Database,
-                     stats: Stats, metadata: Metadata) -> None:
+                     stats: Stats, metadata: Metadata, moderation: Moderation) -> None:
     if not isinstance(query.message, Message):  # older than 48 hours, or deleted
         await query.answer(STALE_BUTTON, show_alert=True)
         return
@@ -156,7 +158,7 @@ async def recap_view(query: CallbackQuery, callback_data: RecapView, lastfm: Las
         # A photo can't replace a text message in place; send it as a reply instead.
         await query.answer("Making the chart…")
         await query.bot.send_chat_action(query.message.chat.id, ChatAction.UPLOAD_PHOTO)
-        image = await album_chart(stats, lastfm, target, period, 3, 3)
+        image = await album_chart(stats, lastfm, moderation, target, period, 3, 3)
         await query.message.reply_photo(
             BufferedInputFile(image, filename="recap.jpg"),
             caption=f"Album chart for {user_link(target.lastfm_username)} · {esc(period.label)}",

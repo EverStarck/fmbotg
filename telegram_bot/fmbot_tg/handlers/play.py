@@ -7,17 +7,19 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from .. import moderation
-from ..context import UserFacingError, resolve_target
+from ..context import resolve_target
+from ..domain import UserFacingError
 from ..db import Database
 from ..formatting import TELEGRAM_CAPTION_LIMIT, TELEGRAM_TEXT_LIMIT, ago, esc, link, num, plural, truncate, user_link
 from ..lastfm import LastFmClient
+from ..moderation import Moderation
 from ..templates import TemplateContext, render as render_template
 
 router = Router(name="play")
 
 @router.message(Command("fm", "np", "nowplaying"))
-async def now_playing(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
+async def now_playing(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
+                      moderation: Moderation) -> None:
     target, _ = await resolve_target(message, (command.args or "").split(), db)
     user = target.lastfm_username
     recent = await lastfm.recent_tracks(user, limit=2, session_key=target.session_key)

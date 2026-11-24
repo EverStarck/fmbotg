@@ -58,9 +58,10 @@ class DisabledCommandsMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        if (isinstance(event, Message) and event.chat.type in ("group", "supergroup")
-                and event.text and event.text.startswith("/")):
-            command = self._toggles.resolve(event.text.split(maxsplit=1)[0])
+        # Commands also run from photo/video captions, so check those too
+        text = (event.text or event.caption) if isinstance(event, Message) else None
+        if isinstance(event, Message) and event.chat.type in ("group", "supergroup") and text and text.startswith("/"):
+            command = self._toggles.resolve(text.split(maxsplit=1)[0])
             if command and command in await self._toggles.disabled(event.chat.id):
                 return None
         return await handler(event, data)

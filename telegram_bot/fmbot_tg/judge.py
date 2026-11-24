@@ -50,7 +50,10 @@ class Judge:
 
     def remaining(self, telegram_id: int) -> int:
         recent = [t for t in self._uses.get(telegram_id, []) if t > time.time() - 86400]
-        self._uses[telegram_id] = recent
+        if recent:
+            self._uses[telegram_id] = recent
+        else:
+            self._uses.pop(telegram_id, None)  # don't keep an entry per person forever
         return max(0, self._daily_limit - len(recent))
 
     async def run(self, telegram_id: int, mode: str, period_label: str, artists: list[tuple[str, int]],
@@ -59,7 +62,16 @@ class Judge:
             raise JudgeUnavailable("Judging isn't set up on this bot (it needs an OpenRouter API key).")
         if self.remaining(telegram_id) <= 0:
             raise JudgeUnavailable(f"You've used your {self._daily_limit} judgements for today. Try again tomorrow.")
-        self._uses.setdefault(telegram_id, []).append(time.time())
+        used_at = time.time()
+        self._uses.setdefault(telegram_id, []).append(used_at)
+        try:
+            return await self._ask(mode, period_label, artists, tracks)
+        except JudgeUnavailable:
+            self._uses[telegram_id].remove(used_at)  # a failed call doesn't use up a judgement
+            raise
+
+    async def _ask(self, mode: str, period_label: str, artists: list[tuple[str, int]],
+                   tracks: list[tuple[str, str, int]]) -> str:
 
         music = [f"Period: {period_label}", "Top artists (plays):"]
         music += [f"- {name} ({plays})" for name, plays in artists]

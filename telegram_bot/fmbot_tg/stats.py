@@ -5,12 +5,13 @@ from collections import Counter
 from urllib.parse import quote_plus
 
 from .cache import TTLCache
-from .context import Target, UserFacingError
-from .db import AggregateRow, Database, User, name_key
+from .domain import Target, UserFacingError
+from .db import AggregateRow, Database, User
+from .names import name_key
 from .formatting import esc
 from .indexer import PAGE_SIZE, Indexer
 from .lastfm import LastFmClient, LastFmError, TopItem, TopKind, TopList, pick_image
-from .periods import Period, year_period
+from .periods import ALL_TIME_END, Period, year_period
 from .playlogic import Play, Streak
 
 # Without an index, ranges are fetched live from Last.fm; cap it so one command can't
@@ -54,6 +55,7 @@ class Stats:
         self._indexer = indexer
         self._ranges = TTLCache(ttl_seconds=120, max_items=2_000)
         self._images = TTLCache(ttl_seconds=3600, max_items=20_000)
+        self._all_time_artists = TTLCache(ttl_seconds=1800, max_items=5_000)
 
     # --- top lists ----------------------------------------------------------------------
 
@@ -228,3 +230,25 @@ class Stats:
             await self._indexer.update(caller.id)
         rows = await self._db.global_playcounts(kind, subject, limit)
         return [(user, plays) for user, plays in rows if not self._indexer.is_importing(user.id)]
+
+    async def all_time_artists(self, user: User, limit: int) -> list[tuple[str, int]] | None:
+        """Someone's all-time top artists as (name, plays), cached for 30 minutes; None if Last.fm fails.
+
+        From the play index once a full import is done (never from a half-finished one), else Last.fm.
+        Works for unsaved Users too (friends who never used the bot).
+        """
+        key = (user.lastfm_username.lower(), limit)
+        cached = self._all_time_artists.get(key)
+        if cached is not None:
+            return cached
+        if user.id is not None and user.indexed_at is not None and not self._indexer.is_importing(user.id):
+            rows = [(r.name, r.playcount) for r in await self._db.top_from_plays(user.id, "artists", 0, ALL_TIME_END,
+                                                                                limit=limit)]
+        else:
+            try:
+                top = await self._lastfm.top(user.lastfm_username, "artists", "overall", limit=limit)
+            except LastFmError:
+                return None
+            rows = [(item.name, item.playcount) for item in top.items]
+        self._all_time_artists.set(key, rows)
+        return rows

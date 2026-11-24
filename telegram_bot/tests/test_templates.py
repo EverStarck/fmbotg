@@ -1,6 +1,6 @@
 import httpx
 
-from fmbot_tg.context import Target
+from fmbot_tg.domain import Target
 from fmbot_tg.handlers.top import rank_change
 from fmbot_tg.lastfm import LastFmClient, Scrobble
 from fmbot_tg.templates import TemplateContext, render, unknown_variables

@@ -3,9 +3,10 @@ import asyncio
 import httpx
 
 from fmbot_tg.db import Database
+from fmbot_tg.dimensions import COUNTRY, GENRE
 from fmbot_tg.lastfm import LastFmClient
 from fmbot_tg.metadata import (
-    Metadata, by_genre, clean_tags, flag, match_country, pick_musicbrainz_artist,
+    Metadata, clean_tags, flag, match_country, pick_musicbrainz_artist,
 )
 
 
@@ -18,8 +19,14 @@ def test_tags_drop_noise_nationalities_decades_and_spelling_variants():
 def test_genre_totals_merge_spellings_and_count_each_artist_once_per_genre():
     rows = [("Radiohead", 100), ("Kendrick Lamar", 50)]
     genres = {"radiohead": ["alternative", "art rock"], "kendrick lamar": ["hip-hop", "alternative"]}
-    assert by_genre(rows, genres) == [("alternative", 150, ["Radiohead", "Kendrick Lamar"]),
-                                      ("art rock", 100, ["Radiohead"]), ("hip-hop", 50, ["Kendrick Lamar"])]
+    groups = [(c.label, plays, artists) for c, plays, artists in GENRE.aggregate(rows, genres)]
+    assert groups == [("alternative", 150, ["Radiohead", "Kendrick Lamar"]),
+                      ("art rock", 100, ["Radiohead"]), ("hip-hop", 50, ["Kendrick Lamar"])]
+    # Countries: one per artist, with a flag, and typed names find them
+    countries = COUNTRY.aggregate(rows, {"radiohead": ("GB", "United Kingdom")})
+    assert [(c.title, plays) for c, plays, _ in countries] == [("🇬🇧 United Kingdom", 100)]
+    assert COUNTRY.find("uk", [c for c, _, _ in countries]).key == "GB"
+    assert GENRE.find("Hip Hop", [c for c, _, _ in GENRE.aggregate(rows, genres)]).label == "hip-hop"
 
 
 def test_musicbrainz_needs_an_exact_name_and_skips_namesakes_without_a_country():

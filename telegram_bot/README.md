@@ -96,7 +96,7 @@ and messages you when it's done. A background loop then fetches new scrobbles fo
 every couple of hours, and commands that need fresh data (`/whoknows`, range top lists) update
 you first. If you edit or delete scrobbles on Last.fm, run `/update full`.
 
-Migrations run automatically at startup (Alembic). To add one after changing `db.py`:
+Migrations run automatically at startup (Alembic). To add one after changing `fmbot_tg/db/models.py`:
 `DATABASE_URL=... uv run alembic revision --autogenerate -m "describe change"`.
 
 ## /fm templates
@@ -179,6 +179,22 @@ email so MusicBrainz can reach you, as they ask.
 Charts and receipts are drawn with Pillow. It needs a font that covers the names in your music
 library: the Docker image installs Noto CJK (Latin, Cyrillic, Greek, Chinese, Japanese, Korean).
 Elsewhere it looks for common system fonts; set `FONT_PATH` to use a specific `.ttf`/`.ttc` file.
+
+## Code layout
+
+- `fmbot_tg/__main__.py` builds every service once (`Services`) and the dispatcher; handlers get services
+  injected by parameter name.
+- `fmbot_tg/handlers/` holds one aiogram router per area. Handlers import services, never each other, and
+  nothing outside `handlers/` imports them.
+- Services: `stats.py` (top lists, who knows counts), `indexer.py` (history import), `metadata.py` and
+  `dimensions.py` (genres, countries, photos, track lengths), `members.py`, `social.py`, `group_charts.py`,
+  `chart_service.py`, `moderation.py`, `autopost.py`, `judge.py`, `links.py`.
+- `fmbot_tg/db/` is a package: `models.py` (tables), and query mixins by topic (`users`, `plays`, `chats`,
+  `crowns`, `meta`) combined into `Database`.
+- Leaf modules with no bot imports: `domain.py` (Target, errors, kinds), `names.py` (name matching),
+  `periods.py`, `formatting.py`.
+- Last.fm calls are limited to `LASTFM_RATE_LIMIT` requests per second (5 by default) across the bot, and
+  request URLs (which carry session keys) are kept out of the logs.
 
 ## Tests
 

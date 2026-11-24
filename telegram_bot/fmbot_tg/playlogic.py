@@ -4,10 +4,10 @@ PlayService.GetCurrentStreak), kept free of I/O so it can be tested directly."""
 import random
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime, tzinfo
+from datetime import date, datetime, timedelta, tzinfo
 from typing import Iterable
 
-from .db import name_key
+from .names import name_key
 
 # Constants.PlayCountBreakPoints
 BREAKPOINTS = [
@@ -186,3 +186,14 @@ def taste(a: list[tuple[str, int]], b: list[tuple[str, int]]) -> TasteMatch:
             overlap += min(count_a / total_a, count_b / total_b)
     shared.sort(key=lambda row: (-min(row[1] / total_a, row[2] / total_b), row[0].lower()))
     return TasteMatch(shared, round(overlap * 100, 1))
+
+
+MAX_PACE_DAYS = 365 * 200  # beyond this, "at this pace" stops meaning anything (and dates overflow)
+
+
+def goal_date(now: datetime, remaining: int, per_day: float) -> datetime | None:
+    """When a goal is reached at a steady pace, or None if that's more than 200 years away."""
+    if per_day <= 0:
+        return None
+    days = remaining / per_day
+    return None if days > MAX_PACE_DAYS else now + timedelta(days=days)

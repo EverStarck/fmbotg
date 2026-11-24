@@ -5,7 +5,8 @@ from aiogram.filters import Command, CommandObject
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from ..context import STALE_BUTTON, Target, UserFacingError, resolve_target
+from ..context import resolve_target
+from ..domain import STALE_BUTTON, Target, UserFacingError
 from ..db import Database
 from ..formatting import TELEGRAM_TEXT_LIMIT, esc, truncate, user_link
 from ..judge import Judge, JudgeUnavailable
@@ -50,9 +51,13 @@ async def _start(message: Message, command: CommandObject, db: Database, judge: 
 @router.message(Command("judge", "ai"))
 async def judge_menu(message: Message, command: CommandObject, db: Database, judge: Judge) -> None:
     target, period = await _start(message, command, db, judge)
-    buttons = [InlineKeyboardButton(text=label, callback_data=JudgeButton(
-        mode=mode, period=period.key, user=target.lastfm_username, by=message.from_user.id).pack())
-        for mode, label in (("compliment", "✨ Compliment"), ("roast", "🔥 Roast"))]
+    try:
+        buttons = [InlineKeyboardButton(text=label, callback_data=JudgeButton(
+            mode=mode, period=period.key, user=target.lastfm_username, by=message.from_user.id).pack())
+            for mode, label in (("compliment", "✨ Compliment"), ("roast", "🔥 Roast"))]
+    except ValueError:
+        # Telegram button data is limited to 64 bytes; a long or odd lfm: name doesn't fit
+        raise UserFacingError("Use <code>/roast</code> or <code>/compliment</code> directly for this user.") from None
     await message.reply(f"Judge {user_link(target.lastfm_username)}'s taste ({esc(period.label)}) with {esc(judge.model_name)}. "
                         f"You have {judge.remaining(message.from_user.id)} left today.",
                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]))

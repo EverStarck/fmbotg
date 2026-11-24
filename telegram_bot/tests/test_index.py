@@ -181,7 +181,7 @@ async def test_saved_streak_is_updated_in_place_and_survives_reimport(tmp_path):
 async def test_billboard_compares_with_the_previous_window(tmp_path):
     import time
 
-    from fmbot_tg.context import Target
+    from fmbot_tg.domain import Target
     from fmbot_tg.periods import WEEKLY
     from fmbot_tg.stats import Stats
 
@@ -210,20 +210,44 @@ async def test_billboard_compares_with_the_previous_window(tmp_path):
 async def test_nickname_resolves_to_a_registered_users_index(tmp_path):
     from types import SimpleNamespace
 
-    from fmbot_tg.context import configure_aliases, resolve_target
+    from fmbot_tg.context import Aliases, resolve_target, use_aliases
 
     db, lastfm, indexer, user = await _setup(tmp_path, FakeHistory([(100, "A", "B", "C")]))
     await indexer.run_full_import(user.id)
-    configure_aliases({-100123: {"al": "alice"}})
     try:
         message = SimpleNamespace(chat=SimpleNamespace(id=-100123), reply_to_message=None,
                                   from_user=SimpleNamespace(id=999))
-        target, rest = await resolve_target(message, ["monthly", "Al"], db)
+        with use_aliases(Aliases({-100123: {"al": "alice"}})):
+            target, rest = await resolve_target(message, ["monthly", "Al"], db)
         assert (target.lastfm_username, target.user_id, target.indexed, rest) == ("alice", user.id, True, ["monthly"])
         # Unknown Last.fm names still work, just without an index
         other, _ = await resolve_target(message, ["lfm:stranger"], db)
         assert (other.lastfm_username, other.user_id) == ("stranger", None)
     finally:
-        configure_aliases({})
         await lastfm.close()
         await db.close()
+
+
+async def test_switching_account_during_an_import_keeps_none_of_the_old_plays(tmp_path, monkeypatch):
+    from fmbot_tg.indexer import AccountChanged
+
+    monkeypatch.setattr("fmbot_tg.indexer.PAGE_SIZE", 2)
+    db, lastfm, indexer, user = await _setup(tmp_path, FakeHistory([(100 + i, "Old", "A", f"T{i}") for i in range(5)]))
+    real = lastfm.recent_tracks
+
+    async def switch_after_first_page(*args, page=1, **kwargs):
+        if page == 2:
+            await db.link_lastfm(1, "bob", "sk2")  # /login with another account mid-import
+        return await real(*args, page=page, **kwargs)
+
+    monkeypatch.setattr(lastfm, "recent_tracks", switch_after_first_page)
+    try:
+        await indexer.run_full_import(user.id)
+        raise AssertionError("expected the import to stop")
+    except AccountChanged:
+        pass
+    await db.reset_index(user.id)
+    fresh = await db.get_user_by_id(user.id)
+    assert await db.play_count(user.id) == 0 and fresh.indexed_at is None and fresh.lastfm_username == "bob"
+    await lastfm.close()
+    await db.close()

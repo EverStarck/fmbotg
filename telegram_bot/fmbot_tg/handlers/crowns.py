@@ -5,12 +5,12 @@ from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from ..config import Settings
-from ..context import (
-    UserFacingError, require_group, require_group_admin, resolve_subject, resolve_target,
-)
+from ..members import Members
+from ..context import chat_title, require_group, require_group_admin, resolve_subject, resolve_target
+from ..domain import UserFacingError
 from ..crowns import display_name
-from ..db import DEFAULT_CROWN_THRESHOLD, Database, name_key
+from ..db import DEFAULT_CROWN_THRESHOLD, Database
+from ..names import name_key
 from ..formatting import TELEGRAM_TEXT_LIMIT, esc, plural, truncate, user_link
 from ..lastfm import LastFmClient
 from ..stats import Stats
@@ -39,7 +39,7 @@ async def crowns(message: Message, command: CommandObject, db: Database) -> None
     if not held:
         raise UserFacingError(f"{who} have any crowns here yet. Crowns go to whoever has the most plays of an "
                               f"artist (at least {threshold}) when someone runs /whoknows for it.")
-    lines = [f"<b>Crowns for {user_link(target.lastfm_username)}</b> in {esc(message.chat.title or 'this chat')}", ""]
+    lines = [f"<b>Crowns for {user_link(target.lastfm_username)}</b> in {esc(chat_title(message))}", ""]
     for i, crown in enumerate(held[:SHOWN], 1):
         lines.append(f"{i}. {esc(crown.artist)} · <b>{plural(crown.playcount, 'play')}</b>")
     lines += ["", f"<code>{plural(len(held), 'crown')}</code>"]
@@ -74,14 +74,13 @@ async def crown(message: Message, command: CommandObject, lastfm: LastFmClient, 
 
 
 @router.message(Command("crownleaderboard", "cl", "topcrowns"))
-async def crown_leaderboard(message: Message, db: Database, settings: Settings) -> None:
+async def crown_leaderboard(message: Message, db: Database, members: Members) -> None:
     require_group(message)
     await _crowns_enabled(message, db)
-    members = await db.chat_lastfm_users(message.chat.id, settings.whoknows_max_members)
-    rows = await db.crown_leaderboard(message.chat.id, [m.id for m in members])
+    rows = await db.crown_leaderboard(message.chat.id, [m.id for m in await members.linked(message.chat.id)])
     if not rows:
         raise UserFacingError("Nobody has a crown here yet. Run /whoknows for an artist to hand one out.")
-    lines = [f"<b>Most crowns</b> in {esc(message.chat.title or 'this chat')}", ""]
+    lines = [f"<b>Most crowns</b> in {esc(chat_title(message))}", ""]
     for i, (user, count) in enumerate(rows, 1):
         name = esc(display_name(user))
         if user.telegram_id == message.from_user.id:
@@ -137,24 +136,21 @@ async def kill_crown(message: Message, command: CommandObject, lastfm: LastFmCli
 
 
 @router.message(Command("crownseeder", "seedcrowns"))
-async def crown_seeder(message: Message, db: Database, settings: Settings) -> None:
+async def crown_seeder(message: Message, db: Database, members: Members) -> None:
     """Hand out crowns for every artist at once from imported histories (port of CrownService.SeedCrownsAsync).
 
     Only fills artists without a crown; existing crowns still change hands through /whoknows.
     """
     await require_group_admin(message)
     threshold = await _crowns_enabled(message, db)
-    members = [m for m in await db.chat_lastfm_users(message.chat.id, settings.whoknows_max_members)
-               if m.indexed_at is not None]
-    if not members:
-        raise UserFacingError("Nobody here has an imported history yet, so there's nothing to seed from.")
+    people = await members.require_indexed(message.chat.id, "The crown seeder")
 
     best: dict[str, tuple[str, int, int]] = {}  # artist key -> (artist, user id, plays)
-    for artist, user_id, plays in await db.crown_candidates([m.id for m in members], threshold):
+    for artist, user_id, plays in await db.crown_candidates([m.id for m in people], threshold):
         key = name_key(artist)
         if key not in best or plays > best[key][2]:
             best[key] = (artist, user_id, plays)
     created = await db.seed_crowns(message.chat.id, list(best.values()))
     await message.reply(f"Seeded <b>{plural(created, 'crown')}</b> from the imported histories of "
-                        f"{plural(len(members), 'member')} (at least {plural(threshold, 'play')} each). "
+                        f"{plural(len(people), 'member')} (at least {plural(threshold, 'play')} each). "
                         "Artists that already had a crown were left alone.")

@@ -6,7 +6,8 @@ from aiogram.filters import Command, CommandObject
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from ..context import STALE_BUTTON, Target, UserFacingError, resolve_target
+from ..context import resolve_target
+from ..domain import STALE_BUTTON, Target, UserFacingError
 from ..db import Database
 from ..formatting import esc, link, num, plural, user_link
 from ..lastfm import TopKind

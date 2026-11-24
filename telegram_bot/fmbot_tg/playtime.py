@@ -6,7 +6,7 @@ length is unknown count as the average known length, like FMBot's fallback.
 
 from dataclasses import dataclass
 
-from .db import name_key
+from .names import name_key
 from .formatting import plural
 from .metadata import Metadata
 

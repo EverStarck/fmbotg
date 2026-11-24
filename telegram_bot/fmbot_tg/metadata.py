@@ -16,7 +16,9 @@ from datetime import timedelta
 import httpx
 
 from . import deezer
-from .db import Database, name_key, utcnow
+from .db import Database
+from .domain import as_utc, utcnow
+from .names import genre_key, name_key, normalize_answer, remove_edition_suffix
 from .lastfm import LastFmClient, LastFmError
 
 log = logging.getLogger(__name__)
@@ -28,6 +30,7 @@ TAGS_STALE_AFTER = timedelta(days=90)
 COUNTRY_STALE_AFTER = timedelta(days=180)
 IMAGES_STALE_AFTER = timedelta(days=60)
 LISTENERS_STALE_AFTER = timedelta(days=30)
+REFRESH_PER_CALL = 20
 MAX_GENRES = 6
 MIN_TAG_WEIGHT = 10  # Last.fm weights tags 0-100 relative to the artist's top tag
 
@@ -48,11 +51,6 @@ _DECADE = re.compile(r"^(\d{2}|\d{4})'?s$")
 # Typed country names that don't match MusicBrainz's spelling
 COUNTRY_ALIASES = {"uk": "GB", "england": "GB", "britain": "GB", "usa": "US", "america": "US",
                    "korea": "KR", "south korea": "KR", "russia": "RU", "holland": "NL"}
-
-
-def genre_key(name: str) -> str:
-    """'Hip Hop', 'hip-hop' and 'hiphop' are the same genre."""
-    return re.sub(r"[\s_\-]+", "", name.lower())
 
 
 def clean_tags(tags: list[tuple[str, int]]) -> list[str]:
@@ -83,8 +81,6 @@ def _mb_quote(text: str) -> str:
 
 def pick_release_date(artist: str, album: str, groups: list[dict]) -> str | None:
     """The earliest first-release date among exact title and artist matches (editions included)."""
-    from .games import normalize_answer, remove_edition_suffix
-
     title = normalize_answer(remove_edition_suffix(album))
     dates = []
     for group in groups:
@@ -174,14 +170,14 @@ class Metadata:
         self._lastfm = lastfm
         self._http = http
         self._user_agent = user_agent
-        self._tags = _Queue(self._fetch_tags, workers=6)
+        self._tags = _Queue(self._fetch_tags, workers=3)
         self._mb_lock = asyncio.Lock()  # one MusicBrainz request at a time, shared by countries and release dates
         self._mb_last = 0.0
         self._countries = _Queue(self._fetch_country, workers=1)
         self._releases = _Queue(self._fetch_release, workers=1,
                                 key=lambda artist, album: (name_key(artist), name_key(album)))
         self._images = _Queue(self._fetch_image, workers=3, spacing=0.2)  # Deezer: 50 requests per 5 seconds
-        self._listeners = _Queue(self._fetch_listeners, workers=6)
+        self._listeners = _Queue(self._fetch_listeners, workers=3)
         self._tracks = _Queue(self._fetch_track, workers=4, spacing=0.1,
                               key=lambda artist, track: (name_key(artist), name_key(track)))
 
@@ -286,21 +282,22 @@ class Metadata:
         for artist in artists:
             names.setdefault(name_key(artist), artist)
         cached = await self._db.artist_meta(keys)
-        values, missing = {}, []
+        values, missing, stale = {}, [], []
         now = utcnow()
         for key in keys:
             value, fetched_at = read(cached.get(key))
-            if fetched_at is not None:
-                values[key] = value
-                if fetched_at.tzinfo is None:  # SQLite drops the zone
-                    fetched_at = fetched_at.replace(tzinfo=now.tzinfo)
-                if now - fetched_at < stale_after:
-                    continue
-                queue.request(names[key])  # refresh in the background, use the old value now
+            if fetched_at is None:
+                missing.append(key)
                 continue
-            missing.append(key)
+            values[key] = value  # an old value is fine to use while it's refreshed
+            if now - as_utc(fetched_at) >= stale_after:
+                stale.append(key)
 
         futures = {key: queue.request(names[key]) for key in missing[:max_new]}
+        # Refresh a few stale ones per call, after the missing ones, so a big list of old entries
+        # can't hold up new lookups behind MusicBrainz's one request per second
+        for key in stale[:REFRESH_PER_CALL]:
+            queue.request(names[key])
         if futures:
             done, _ = await asyncio.wait(futures.values(), timeout=wait)
             for key, future in futures.items():
@@ -358,31 +355,6 @@ class Metadata:
                 return None, None
             return ((row.country_code, row.country) if row.country_code else None), row.country_at
         return await self._lookup(artists, self._countries, read, COUNTRY_STALE_AFTER, wait, max_new)
-
-
-def by_genre(rows: list[tuple[str, int]], genres: dict[str, list[str]]) -> list[tuple[str, int, list[str]]]:
-    """Artist playcounts -> (genre, plays, top artists) per genre, most played first.
-    Like FMBot, an artist's plays count fully towards each of its genres."""
-    totals: dict[str, list] = {}
-    for artist, plays in rows:
-        for genre in genres.get(name_key(artist)) or []:
-            entry = totals.setdefault(genre_key(genre), [genre, 0, []])
-            entry[1] += plays
-            entry[2].append(artist)
-    return sorted(((g, p, a) for g, p, a in totals.values()), key=lambda e: (-e[1], e[0]))
-
-
-def by_country(rows: list[tuple[str, int]], countries: dict[str, tuple[str, str] | None]
-               ) -> list[tuple[str, str, int, list[str]]]:
-    """Artist playcounts -> (code, country, plays, top artists) per country, most played first."""
-    totals: dict[str, list] = {}
-    for artist, plays in rows:
-        found = countries.get(name_key(artist))
-        if found:
-            entry = totals.setdefault(found[0], [found[0], found[1], 0, []])
-            entry[2] += plays
-            entry[3].append(artist)
-    return sorted((tuple(e) for e in totals.values()), key=lambda e: (-e[2], e[1]))
 
 
 def match_country(query: str, known: list[tuple[str, str]]) -> tuple[str, str] | None:

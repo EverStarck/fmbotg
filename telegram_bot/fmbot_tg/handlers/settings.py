@@ -8,7 +8,8 @@ from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from ..context import NOT_REGISTERED_SELF, NotRegistered, Target, UserFacingError, resolve_subject, resolve_target
+from ..context import resolve_subject, resolve_target, self_target
+from ..domain import UserFacingError
 from ..db import PRIVACY_CHAT, PRIVACY_GLOBAL, Database
 from ..formatting import TELEGRAM_TEXT_LIMIT, ago, esc, link, plural, truncate, user_link
 from ..lastfm import LastFmClient, LastFmError
@@ -49,17 +50,10 @@ def find_timezone(name: str) -> str | None:
         return None
 
 
-async def _self(message: Message, db: Database) -> Target:
-    user = await db.get_user(message.from_user.id)
-    if user is None or not user.lastfm_username:
-        raise NotRegistered(NOT_REGISTERED_SELF)
-    return Target.from_user(user, True)
-
-
 @router.message(Command("settings", "set"))
 async def settings(message: Message, command: CommandObject, db: Database) -> None:
     args = (command.args or "").split()
-    target = await _self(message, db)
+    target = await self_target(message, db)
     if not args:
         now = datetime.now(target.tz)
         await message.reply(
@@ -149,18 +143,18 @@ async def _set_privacy(message: Message, db: Database, value: str) -> None:
 
 @router.message(Command("privacy"))
 async def privacy(message: Message, command: CommandObject, db: Database) -> None:
-    await _self(message, db)
+    await self_target(message, db)
     await _set_privacy(message, db, (command.args or "").strip())
 
 
 @router.message(Command("timezone", "tz"))
 async def timezone_cmd(message: Message, command: CommandObject, db: Database) -> None:
-    await _self(message, db)
+    await self_target(message, db)
     await _set_timezone(message, db, (command.args or "").strip())
 
 
 async def _love(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database, loved: bool) -> None:
-    target = await _self(message, db)
+    target = await self_target(message, db)
     artist, track = await resolve_subject("track", command.args or "", target, lastfm)
     await lastfm.love(artist, track, target.session_key, loved=loved)
     verb = "❤️ Loved" if loved else "💔 Unloved"
@@ -194,7 +188,7 @@ async def loved_tracks(message: Message, command: CommandObject, lastfm: LastFmC
 @router.message(Command("scrobble", "sb"))
 async def scrobble(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
     """Scrobble a track now (port of TrackBuilders.ScrobbleAsync). Format: Artist - Track."""
-    target = await _self(message, db)
+    target = await self_target(message, db)
     query = (command.args or "").strip()
     if not query:
         raise UserFacingError("Add a track, e.g. <code>/scrobble Radiohead - Idioteque</code>.")

@@ -23,6 +23,10 @@ MAX_UPDATE_PAGES = 20
 Notify = Callable[[int, str], Awaitable[object]]
 
 
+class AccountChanged(Exception):
+    """The user logged out or switched Last.fm accounts while their history was being imported."""
+
+
 def plays_from(result: RecentTracks) -> list[PlayRow]:
     # The now playing entry has no timestamp and isn't a scrobble yet.
     return [PlayRow(s.timestamp, s.artist, s.album or None, s.track) for s in result.tracks if s.timestamp]
@@ -91,6 +95,8 @@ class Indexer:
                 return 0
             try:
                 return await self._update_locked(user)
+            except AccountChanged:
+                return 0  # /login or /logout already reset the index
             except LastFmError as exc:
                 await self._db.mark_attempt(user.id)
                 log.info("Update for %s failed: %s", user.lastfm_username, exc)
@@ -106,6 +112,13 @@ class Indexer:
 
     # --- internals ----------------------------------------------------------------------
 
+    async def _ensure_same_account(self, user: User) -> None:
+        """/login and /logout don't wait for an import, so check between pages that the plays we're
+        about to save still belong to the account linked now."""
+        current = await self._db.get_user_by_id(user.id)
+        if current is None or (current.lastfm_username or "").lower() != user.lastfm_username.lower():
+            raise AccountChanged()
+
     async def _full_import_locked(self, user: User) -> int:
         started = int(time.time())
         await self._db.begin_full_index(user.id)
@@ -116,6 +129,7 @@ class Indexer:
                 page=page, to_ts=started, extended=False,
             )
             plays = plays_from(result)
+            await self._ensure_same_account(user)
             await self._db.insert_plays(user.id, plays)
             imported += len(plays)
             newest = max([newest, *(p.played_at for p in plays)])
@@ -123,6 +137,7 @@ class Indexer:
                 break
             page += 1
         # Anything scrobbled after `started` is picked up by the next update.
+        await self._ensure_same_account(user)
         await self._db.finish_index(user.id, newest or started, full=True)
         log.info("Imported %s plays for %s", imported, user.lastfm_username)
         return imported
@@ -145,6 +160,7 @@ class Indexer:
                 return 0
             page += 1
 
+        await self._ensure_same_account(user)
         await self._db.insert_plays(user.id, plays)
         newest = max([user.last_scrobble_ts or 0, *(p.played_at for p in plays)])
         await self._db.finish_index(user.id, newest, full=False)
@@ -153,9 +169,16 @@ class Indexer:
     async def _worker(self) -> None:
         while True:
             user_id, notify_chat = await self._queue.get()
+            restart = False
             try:
                 imported = await self.run_full_import(user_id)
                 message = f"✅ Your Last.fm history is imported ({imported:,} scrobbles)."
+            except AccountChanged:
+                # Drop what this import saved for the old account; a new account is imported from scratch
+                await self._db.reset_index(user_id)
+                current = await self._db.get_user_by_id(user_id)
+                restart = current is not None and current.lastfm_username is not None
+                message = None
             except LastFmError as exc:
                 log.warning("Import for user %s failed: %s", user_id, exc)
                 await self._db.mark_attempt(user_id)
@@ -167,7 +190,10 @@ class Indexer:
             finally:
                 self._queued.discard(user_id)
                 self._queue.task_done()
-            if notify_chat is not None and self._notify is not None:
+            if restart:
+                self.queue_full_import(user_id, notify_chat)
+                continue
+            if message is not None and notify_chat is not None and self._notify is not None:
                 try:
                     await self._notify(notify_chat, message)
                 except Exception:

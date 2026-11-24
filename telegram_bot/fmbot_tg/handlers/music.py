@@ -3,7 +3,6 @@
 the lyrics command and the Spotify/YouTube search commands)."""
 
 import asyncio
-import time
 from collections import Counter
 
 import httpx
@@ -13,9 +12,11 @@ from aiogram.filters import Command, CommandObject
 from aiogram.types import BufferedInputFile, LinkPreviewOptions, Message
 
 from ..charts import render_iceberg
-from ..config import Settings
-from ..context import Target, UserFacingError, require_group, resolve_subject, resolve_target
-from ..db import Database, name_key
+from ..members import Members
+from ..context import chat_title, require_group, resolve_subject, resolve_target
+from ..domain import Target, UserFacingError
+from ..db import Database
+from ..names import name_key
 from ..formatting import TELEGRAM_TEXT_LIMIT, esc, link, plural, truncate, user_link
 from ..lastfm import LastFmClient
 from ..links import MusicLinks
@@ -76,7 +77,7 @@ async def iceberg(message: Message, command: CommandObject, db: Database, stats:
 async def _track_counts(stats: Stats, db: Database, target: Target, period: Period) -> list[tuple[str, str, int]]:
     if target.indexed and target.user_id is not None:
         await stats.require_index(target)
-        from_ts, to_ts = (0, int(time.time()) + 1) if period == ALL_TIME else period.bounds(tz=target.tz)
+        from_ts, to_ts = period.bounds(tz=target.tz)
         return [(a, t, c) for _, a, t, c in await db.track_playcounts([target.user_id], from_ts, to_ts)]
     if period == ALL_TIME:
         await stats.require_index(target)
@@ -124,15 +125,12 @@ async def playtime(message: Message, command: CommandObject, db: Database, stats
 
 @router.message(Command("timeleaderboard", "playtimeleaderboard", "listeningtimeleaderboard", "tlb", "ptlb"))
 async def time_leaderboard(message: Message, command: CommandObject, db: Database, metadata: Metadata,
-                           settings: Settings) -> None:
+                           members: Members) -> None:
     """Who here listened the longest (port of the time leaderboard), from imported histories."""
     require_group(message)
     period, _ = parse_period((command.args or "").split(), default=WEEKLY)
-    people = {m.id: m for m in await db.chat_lastfm_users(message.chat.id, settings.whoknows_max_members)
-              if m.indexed_at}
-    if not people:
-        raise UserFacingError("The time leaderboard uses imported histories, and nobody here has one yet.")
-    from_ts, to_ts = (0, int(time.time()) + 1) if period == ALL_TIME else period.bounds()
+    people = {m.id: m for m in await members.require_indexed(message.chat.id, "The time leaderboard")}
+    from_ts, to_ts = period.bounds()
     rows = await db.track_playcounts(list(people), from_ts, to_ts)
     if not rows:
         raise UserFacingError(f"No plays here for {esc(period.label)}.")
@@ -149,10 +147,10 @@ async def time_leaderboard(message: Message, command: CommandObject, db: Databas
     for user_id, artist, track, plays in rows:
         per_user[user_id] += per_track[(name_key(artist), name_key(track))] * plays
 
-    lines = [f"<b>Listening time in {esc(message.chat.title or 'this group')}</b> · {esc(period.label)}", ""]
+    lines = [f"<b>Listening time in {esc(chat_title(message, "this group"))}</b> · {esc(period.label)}", ""]
     for i, (user_id, ms) in enumerate(per_user.most_common(15), 1):
         user = people[user_id]
-        name = esc(user.display_name or user.lastfm_username)
+        name = esc(user.shown_name)
         if user.telegram_id == message.from_user.id:
             name = f"<b>{name}</b>"
         lines.append(f"{i}. {name} · {hours(int(ms))}")

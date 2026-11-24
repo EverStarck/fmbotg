@@ -50,28 +50,45 @@ def display_name(user: User | None) -> str:
     return user.display_name or user.lastfm_username or "someone"
 
 
-async def update_crown(db: Database, chat_id: int, artist: str,
-                       results: list[tuple[User, int | None]]) -> tuple[int | None, str | None]:
-    """Apply a /whoknows result to the artist's crown. Returns (holder's user id, announcement)."""
+@dataclass(frozen=True)
+class CrownChange:
+    """What a /whoknows run did to an artist's crown."""
+
+    holder_id: int | None = None  # who holds it now
+    action: str = "none"  # "none", "keep", "claim" or "steal"
+    winner: User | None = None  # for claim/steal
+    previous: User | None = None  # for steal
+    previous_plays: int = 0  # for steal
+
+    def announcement(self) -> str | None:
+        if self.action == "claim":
+            return f"👑 Crown claimed by <b>{esc(display_name(self.winner))}</b>!"
+        if self.action == "steal":
+            return (f"👑 Crown stolen by <b>{esc(display_name(self.winner))}</b> from "
+                    f"{esc(display_name(self.previous))} ({plural(self.previous_plays, 'play')})!")
+        return None
+
+
+async def update_crown(db: Database, chat_id: int, artist: str, results: list[tuple[User, int | None]]) -> CrownChange:
+    """Apply a /whoknows result to the artist's crown."""
     settings = await db.chat_settings(chat_id)
     if settings.crowns_disabled:
-        return None, None
+        return CrownChange()
     threshold = settings.crown_threshold or DEFAULT_CROWN_THRESHOLD
     current = await db.active_crown(chat_id, artist)
     users = {user.id: user for user, _ in results}
     decision = decide(current.user_id if current else None, {user.id: plays for user, plays in results}, threshold)
 
     if decision.action == "none":
-        return None, None
+        return CrownChange()
     if decision.action == "keep":
         if decision.plays is not None and decision.plays != current.playcount:
             await db.update_crown_playcount(current.id, decision.plays)
-        return current.user_id, None
+        return CrownChange(current.user_id, "keep")
 
     await db.set_crown(chat_id, artist, decision.user_id, decision.plays)
-    winner = esc(display_name(users.get(decision.user_id)))
+    winner = users.get(decision.user_id)
     if decision.action == "claim":
-        return decision.user_id, f"👑 Crown claimed by <b>{winner}</b>!"
+        return CrownChange(decision.user_id, "claim", winner)
     previous = users.get(current.user_id) or await db.get_user_by_id(current.user_id)
-    return decision.user_id, (f"👑 Crown stolen by <b>{winner}</b> from {esc(display_name(previous))} "
-                              f"({plural(current.playcount, 'play')})!")
+    return CrownChange(decision.user_id, "steal", winner, previous, current.playcount)

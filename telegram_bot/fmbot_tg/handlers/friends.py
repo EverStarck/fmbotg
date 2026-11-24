@@ -10,31 +10,16 @@ from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from ..context import UserFacingError, apply_alias, self_user
-from ..db import Database, User
+from ..context import apply_alias, self_user
+from ..domain import UserFacingError
+from ..db import Database
 from ..formatting import TELEGRAM_TEXT_LIMIT, ago, esc, link, truncate, user_link
 from ..lastfm import LastFmClient, LastFmError
+from ..social import MAX_ADDED, MAX_SHOWN, NO_FRIENDS, friend_names
 
 router = Router(name="friends")
 
-MAX_ADDED = 20  # added with /addfriend
-MAX_SHOWN = 25  # friends looked up per /friendsfm or friend who knows
 FRIEND_LOOKUPS = 8  # concurrent Last.fm calls for /friendsfm
-
-
-async def friend_names(me: User, db: Database, lastfm: LastFmClient) -> list[str]:
-    """Added friends first, then Last.fm follows; no duplicates and never yourself."""
-    added = await db.friends(me.id)
-    try:
-        following = await lastfm.following(me.lastfm_username, limit=MAX_SHOWN * 2)
-    except LastFmError:
-        following = []  # still show the friends added here
-    seen, names = {me.lastfm_username.lower()}, []
-    for name in added + following:
-        if name.lower() not in seen:
-            seen.add(name.lower())
-            names.append(name)
-    return names[:MAX_SHOWN]
 
 
 async def _name_from_arg(message: Message, arg: str, db: Database) -> str:
@@ -142,8 +127,7 @@ async def friends_fm(message: Message, lastfm: LastFmClient, db: Database) -> No
     me = await self_user(message, db)
     names = await friend_names(me, db, lastfm)
     if not names:
-        raise UserFacingError("You have no friends here yet. Follow people on Last.fm, or add them with "
-                              "<code>/addfriend username</code>.")
+        raise UserFacingError(NO_FRIENDS)
 
     limit = asyncio.Semaphore(FRIEND_LOOKUPS)
 

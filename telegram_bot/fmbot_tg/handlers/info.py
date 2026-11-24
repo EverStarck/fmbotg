@@ -1,21 +1,22 @@
 """/artist, /album, /track (port of ArtistBuilders/AlbumBuilders/TrackBuilders info commands)."""
 
 import asyncio
-import re
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from .. import moderation
-from ..context import UserFacingError, resolve_subject, resolve_target
-from ..db import Database, name_key
+from ..context import resolve_subject, resolve_target
+from ..domain import UserFacingError
+from ..db import Database
+from ..names import name_key
 from ..formatting import (
     TELEGRAM_CAPTION_LIMIT, TELEGRAM_TEXT_LIMIT, clean_wiki, duration, esc, link, num, plural, truncate,
     user_link,
 )
-from ..lastfm import LastFmClient, as_list, pick_image
+from ..lastfm import LastFmClient, as_list, full_size_image, pick_image
+from ..moderation import Moderation
 from ..metadata import Metadata
 from ..stats import Stats
 
@@ -40,7 +41,7 @@ async def _send(message: Message, text: str, image: str | None) -> None:
 
 @router.message(Command("artist", "a", "artistinfo"))
 async def artist(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                 metadata: Metadata) -> None:
+                 metadata: Metadata, moderation: Moderation) -> None:
     target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     (name,) = await resolve_subject("artist", " ".join(rest), target, lastfm)
     info = await lastfm.artist_info(name, target.lastfm_username)
@@ -58,13 +59,14 @@ async def artist(message: Message, command: CommandObject, lastfm: LastFmClient,
     if similar:
         lines += ["", "Similar: " + ", ".join(esc(s) for s in similar)]
     # Last.fm stopped serving artist photos; Deezer has them
-    photo = (await metadata.images([info["name"]], wait=4)).values.get(name_key(info["name"]))
+    photo = None if moderation.is_censored(info["name"]) else \
+        (await metadata.images([info["name"]], wait=4)).values.get(name_key(info["name"]))
     await _send(message, "\n".join(lines), photo)
 
 
 @router.message(Command("album", "ab", "albuminfo"))
 async def album(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                metadata: Metadata) -> None:
+                metadata: Metadata, moderation: Moderation) -> None:
     target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     artist_name, album_name = await resolve_subject("album", " ".join(rest), target, lastfm)
     info = await lastfm.album_info(artist_name, album_name, target.lastfm_username)
@@ -92,7 +94,8 @@ async def album(message: Message, command: CommandObject, lastfm: LastFmClient, 
 
 
 @router.message(Command("track", "tr", "trackinfo"))
-async def track(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
+async def track(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
+                moderation: Moderation) -> None:
     target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     artist_name, track_name = await resolve_subject("track", " ".join(rest), target, lastfm)
     info = await lastfm.track_info(artist_name, track_name, target.lastfm_username)
@@ -111,7 +114,8 @@ async def track(message: Message, command: CommandObject, lastfm: LastFmClient, 
         lines.append(f"Duration: {duration(int(info['duration']))}")
     if tags := _tags(info):
         lines += ["", f"<i>{tags}</i>"]
-    censored = moderation.is_censored(artist_name, album_info.get("title"))
+    # The autocorrected artist, so another spelling can't get around censoring
+    censored = moderation.is_censored((info.get("artist") or {}).get("name", artist_name), album_info.get("title"))
     await _send(message, "\n".join(lines), None if censored else pick_image(album_info.get("image")))
 
 
@@ -151,7 +155,8 @@ async def album_tracks(message: Message, command: CommandObject, lastfm: LastFmC
 
 
 @router.message(Command("cover", "co", "albumcover"))
-async def cover(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
+async def cover(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
+                moderation: Moderation) -> None:
     """Full-size album cover (port of AlbumBuilders.CoverAsync)."""
     target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     artist_name, album_name = await resolve_subject("album", " ".join(rest), target, lastfm)
@@ -166,8 +171,3 @@ async def cover(message: Message, command: CommandObject, lastfm: LastFmClient, 
         await message.reply_photo(full_size_image(image), caption=caption)
     except TelegramBadRequest:
         await message.reply_photo(image, caption=caption)  # original too large or unavailable
-
-
-def full_size_image(url: str) -> str:
-    """Last.fm image URLs carry a size segment (…/i/u/300x300/hash.jpg); removing it gives the original."""
-    return re.sub(r"/i/u/\d+x\d+/", "/i/u/", url)

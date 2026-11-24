@@ -4,7 +4,8 @@ from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from ..context import UserFacingError, self_user
+from ..context import self_user
+from ..domain import UserFacingError
 from ..db import Database
 from ..formatting import esc
 from ..shortcuts import MAX_SHORTCUTS, NAME_RE, Shortcuts

@@ -51,6 +51,8 @@ class Settings:
     # Telegram user ids allowed to use the owner commands (bans, censoring, /botstats)
     owner_ids: frozenset[int] = frozenset()
     judge_daily_limit: int = 5
+    # Requests per second to Last.fm across the whole bot (their guideline is about 5 per key)
+    lastfm_rate_limit: float = 5.0
 
     @property
     def user_agent(self) -> str:
@@ -75,4 +77,5 @@ class Settings:
             openrouter_model=os.getenv("OPENROUTER_MODEL") or None,
             owner_ids=frozenset(int(i) for i in os.getenv("BOT_OWNER_IDS", "").replace(",", " ").split()),
             judge_daily_limit=int(os.getenv("JUDGE_DAILY_LIMIT", "5")),
+            lastfm_rate_limit=float(os.getenv("LASTFM_RATE_LIMIT", "5")),
         )

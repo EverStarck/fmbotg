@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from .games import normalize_answer
+from .names import normalize_answer
 
 API = "https://api.deezer.com"
 

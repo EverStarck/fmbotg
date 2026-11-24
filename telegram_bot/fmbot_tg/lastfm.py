@@ -3,13 +3,16 @@
 import asyncio
 import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 
 from .cache import TTLCache
+from .domain import TopKind
+from .formatting import esc
 
 log = logging.getLogger(__name__)
 
@@ -22,7 +25,6 @@ PLACEHOLDER_IMAGE_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
 # Operation failed / service offline / temporarily unavailable / rate limited
 TRANSIENT_ERRORS = {8, 11, 16, 29}
 
-TopKind = Literal["artists", "albums", "tracks"]
 
 
 class LastFmError(Exception):
@@ -52,7 +54,7 @@ class LastFmError(Exception):
             return "Last.fm is rate limiting us right now. Try again in a minute."
         if self.is_transient:
             return "Last.fm is having issues right now. Please try again later."
-        return f"Last.fm returned an error: {self.message}"
+        return f"Last.fm returned an error: {esc(self.message)}"
 
 
 def sign(params: dict[str, str], secret: str) -> str:
@@ -77,6 +79,11 @@ def pick_image(images: Any) -> str | None:
         if url and PLACEHOLDER_IMAGE_HASH not in url:
             return url
     return None
+
+
+def full_size_image(url: str) -> str:
+    """Last.fm image URLs carry a size segment (…/i/u/300x300/hash.jpg); removing it gives the original."""
+    return re.sub(r"/i/u/\d+x\d+/", "/i/u/", url)
 
 
 def _text(value: Any) -> str:
@@ -183,12 +190,18 @@ class LastFmClient:
         private_key: str | None = None,
         http: httpx.AsyncClient | None = None,
         max_concurrency: int = 8,
+        requests_per_second: float = 0,
     ):
         self.api_key = api_key
         self._secret = api_secret
         self._private_key = private_key
         self._http = http or httpx.AsyncClient(timeout=15)
         self._sem = asyncio.Semaphore(max_concurrency)
+        # Spacing between request starts, so background lookups and big commands together stay under
+        # Last.fm's rate limit (about 5 per second per key). 0 = no limit (tests).
+        self._interval = 1 / requests_per_second if requests_per_second else 0.0
+        self._rate_lock = asyncio.Lock()
+        self._next_slot = 0.0
         self._playcounts = TTLCache(ttl_seconds=300)
 
     @property
@@ -197,6 +210,17 @@ class LastFmClient:
 
     async def close(self) -> None:
         await self._http.aclose()
+
+    async def _wait_for_slot(self) -> None:
+        if not self._interval:
+            return
+        loop = asyncio.get_running_loop()
+        async with self._rate_lock:
+            now = loop.time()
+            slot = max(now, self._next_slot)
+            self._next_slot = slot + self._interval
+        if slot > now:
+            await asyncio.sleep(slot - now)
 
     def auth_url(self, token: str) -> str:
         return f"{AUTH_URL}?api_key={self.api_key}&token={token}"
@@ -217,6 +241,7 @@ class LastFmClient:
             if attempt:
                 await asyncio.sleep(0.6 * attempt)
             try:
+                await self._wait_for_slot()
                 async with self._sem:
                     if post:
                         response = await self._http.post(API_URL, data=query)
@@ -241,6 +266,8 @@ class LastFmClient:
                 error = LastFmError(_int(data["error"]), data.get("message", "Unknown error"))
                 if error.is_transient:
                     last_error = error
+                    if error.code == 29:  # rate limited: back off longer than for other hiccups
+                        await asyncio.sleep(2 * (attempt + 1))
                     continue
                 raise error
             return data

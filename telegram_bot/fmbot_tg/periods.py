@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 
 FIRST_SCROBBLE_YEAR = 2002
+ALL_TIME_END = 2**62  # upper bound for "all time" ranges in the play index
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,8 @@ class Period:
             end = min(datetime(self.year + 1, 1, 1, tzinfo=tz), now)
         elif self.days is not None:
             start, end = now - timedelta(days=self.days), now
+        elif self.api == "overall":
+            return 0, ALL_TIME_END  # all time, for play index queries
         else:
             raise ValueError(f"{self.key} is not a time range")
         return int(start.timestamp()), int(end.timestamp())

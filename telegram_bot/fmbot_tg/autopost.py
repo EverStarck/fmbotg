@@ -11,8 +11,11 @@ from datetime import datetime, timedelta, timezone
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-from .context import UserFacingError
-from .db import Autopost, Database, utcnow
+from .domain import UserFacingError
+from .group_charts import group_top_text
+from .members import Members
+from .db import Autopost, Database
+from .domain import utcnow
 from .periods import ALL_TIME, MONTHLY, WEEKLY, Period
 
 log = logging.getLogger(__name__)
@@ -53,9 +56,9 @@ def describe(post: Autopost) -> str:
 
 
 class Autoposter:
-    def __init__(self, db: Database, max_members: int):
+    def __init__(self, db: Database, members: Members):
         self._db = db
-        self._max_members = max_members
+        self._members = members
         self._task: asyncio.Task | None = None
 
     def start(self, bot: Bot) -> None:
@@ -78,15 +81,13 @@ class Autoposter:
             await asyncio.sleep(CHECK_EVERY)
 
     async def render(self, post: Autopost, bot: Bot) -> str:
-        from .handlers.group import group_top_text  # avoid a circular import at startup
-
         try:
             title = (await bot.get_chat(post.chat_id)).title or "this group"
         except TelegramBadRequest:
             title = "this group"
         shown = 15 if post.content != "recap" else 5
-        return await group_top_text(self._db, post.chat_id, title, CONTENT[post.content], period_for(post),
-                                    self._max_members, shown=shown)
+        return await group_top_text(self._db, self._members, post.chat_id, title, CONTENT[post.content],
+                                    period_for(post), shown=shown)
 
     async def post(self, post: Autopost, bot: Bot, scheduled: bool = True) -> None:
         """Send one autopost. Scheduled runs move the next date forward whatever happens."""
@@ -94,6 +95,10 @@ class Autoposter:
             await self._db.update_autopost(post.id, next_post_at=next_post_at(post.schedule, utcnow()))
         try:
             text = await self.render(post, bot)
+        except TelegramForbiddenError:
+            # Removed from the group: stop trying until an admin resumes it
+            await self._db.update_autopost(post.id, enabled=False)
+            return
         except UserFacingError as exc:
             log.info("Autopost %s skipped: %s", post.id, exc)
             if not scheduled:

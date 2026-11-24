@@ -28,13 +28,14 @@ async def test_whoknows_crown_flow_keeps_history(tmp_path):
     alice = await db.link_lastfm(1, "alice", "sk")
     bob = await db.link_lastfm(2, "bob", "sk")
 
-    holder, note = await update_crown(db, -100, "Radiohead", [(alice, 50), (bob, 40)])
-    assert holder == alice.id and "claimed" in note
-    holder, note = await update_crown(db, -100, "Radiohead", [(alice, 55), (bob, 40)])
-    assert holder == alice.id and note is None
+    change = await update_crown(db, -100, "Radiohead", [(alice, 50), (bob, 40)])
+    assert change.holder_id == alice.id and "claimed" in change.announcement()
+    change = await update_crown(db, -100, "Radiohead", [(alice, 55), (bob, 40)])
+    assert change.holder_id == alice.id and change.announcement() is None
     assert (await db.active_crown(-100, "radiohead")).playcount == 55
-    holder, note = await update_crown(db, -100, "Radiohead", [(alice, 55), (bob, 60)])
-    assert holder == bob.id and "stolen" in note and "55 plays" in note
+    change = await update_crown(db, -100, "Radiohead", [(alice, 55), (bob, 60)])
+    assert change.holder_id == bob.id and change.previous.id == alice.id and change.previous_plays == 55
+    assert "stolen" in change.announcement() and "55 plays" in change.announcement()
     # Another chat has its own crowns
     assert await db.active_crown(-200, "Radiohead") is None
 
@@ -43,7 +44,7 @@ async def test_whoknows_crown_flow_keeps_history(tmp_path):
     assert [u.id for u, _ in await db.crown_leaderboard(-100, [alice.id, bob.id])] == [bob.id]
 
     await db.update_chat_settings(-100, crowns_disabled=True)
-    assert await update_crown(db, -100, "Radiohead", [(alice, 999)]) == (None, None)
+    assert (await update_crown(db, -100, "Radiohead", [(alice, 999)])).holder_id is None
     await db.close()
 
 
@@ -137,4 +138,42 @@ async def test_disabled_commands_match_any_alias_and_skip_only_that_group(tmp_pa
     assert calls == [-200, 5, -100]
     # Survives a restart
     assert await CommandToggles(db).disabled(-100) == {"whoknows"}
+    await db.close()
+
+
+async def test_upgrading_to_a_supergroup_keeps_members_crowns_and_settings(tmp_path):
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'm.db'}")
+    await db.create_schema()
+    alice = await db.link_lastfm(1, "alice", "sk")
+    await db.touch(1, None, "Alice", chat_id=-100)
+    await db.touch(1, None, "Alice", chat_id=-1009)  # already seen in the new supergroup
+    await db.set_crown(-100, "Muse", alice.id, 40)
+    await db.update_chat_settings(-100, crown_threshold=50)
+
+    await db.migrate_chat(-100, -1009)
+    assert [u.id for u in await db.chat_lastfm_users(-1009, 10)] == [alice.id]
+    assert await db.chat_lastfm_users(-100, 10) == []
+    assert (await db.active_crown(-1009, "Muse")).user_id == alice.id
+    assert (await db.chat_settings(-1009)).crown_threshold == 50
+    await db.close()
+
+
+async def test_a_chat_can_never_have_two_active_crowns_for_one_artist(tmp_path):
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    from fmbot_tg.db import Crown
+
+    db = Database(f"sqlite+aiosqlite:///{tmp_path / 'u.db'}")
+    await db.create_schema()
+    alice = await db.link_lastfm(1, "alice", "sk")
+    bob = await db.link_lastfm(2, "bob", "sk")
+    await db.set_crown(-100, "Muse", alice.id, 40)
+    async with db.sessions() as session:  # what a racing second claim would try to write
+        session.add(Crown(chat_id=-100, user_id=bob.id, artist="Muse", artist_key="muse", playcount=41,
+                          start_playcount=41, active=True, seeded=False))
+        with pytest.raises(IntegrityError):
+            await session.commit()
+    await db.set_crown(-100, "Muse", bob.id, 41)  # a normal steal still works
+    assert (await db.active_crown(-100, "Muse")).user_id == bob.id
     await db.close()

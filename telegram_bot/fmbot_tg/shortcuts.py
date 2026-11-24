@@ -34,12 +34,16 @@ class Shortcuts:
     def forget(self, telegram_id: int) -> None:
         self._cache.set(telegram_id, None)
 
-    async def expand(self, telegram_id: int, text: str) -> str | None:
-        """The command a message stands for, or None if it isn't one of the user's shortcuts."""
+    async def expand(self, telegram_id: int, text: str, bot_username: str | None = None) -> str | None:
+        """The command a message stands for, or None if it isn't one of the user's shortcuts.
+        `/mine@SomeOtherBot` is left alone: it's meant for that bot."""
         if not text.startswith("/"):
             return None
         first, _, rest = text.partition(" ")
-        name = first[1:].split("@")[0].lower()
+        name, _, mention = first[1:].partition("@")
+        if mention and bot_username and mention.lower() != bot_username.lower():
+            return None
+        name = name.lower()
         if self.toggles.resolve(name) is not None:
             return None
         output = (await self.for_user(telegram_id)).get(name)
@@ -59,7 +63,9 @@ class ShortcutMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         if isinstance(event, Message) and event.text and event.from_user:
-            expanded = await self._shortcuts.expand(event.from_user.id, event.text)
+            bot = data.get("bot")
+            username = (await bot.me()).username if bot is not None and "@" in event.text.split(" ", 1)[0] else None
+            expanded = await self._shortcuts.expand(event.from_user.id, event.text, username)
             if expanded is not None:
                 event = event.model_copy(update={"text": expanded, "entities": None})
         return await handler(event, data)

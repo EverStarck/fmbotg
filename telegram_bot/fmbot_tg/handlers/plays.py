@@ -8,12 +8,14 @@ from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from ..context import Target, UserFacingError, resolve_subject, resolve_target
+from ..context import resolve_subject, resolve_target
+from ..domain import top_kind, Target, UserFacingError
 from ..db import Database, SavedStreak
 from ..formatting import TELEGRAM_TEXT_LIMIT, span, ago, esc, link, num, ordinal, plural, truncate, user_link
 from ..lastfm import LastFmClient
 from ..periods import ALL_TIME, Period, parse_period
-from ..playlogic import goal_amount, milestone_amount, overview
+from ..playlogic import goal_amount, goal_date, milestone_amount, overview
+from ..routing import add_kind_commands
 from ..stats import Stats, music_url
 
 router = Router(name="plays")
@@ -43,7 +45,7 @@ async def plays(message: Message, command: CommandObject, lastfm: LastFmClient, 
                         f"{_period_suffix(period)}.")
 
 
-async def _subject_plays(message: Message, command: CommandObject, kind: str, lastfm: LastFmClient,
+async def _subject_plays(message: Message, kind: str, command: CommandObject, lastfm: LastFmClient,
                          db: Database, stats: Stats) -> None:
     period, args = parse_period((command.args or "").split(), default=ALL_TIME, edges_only=True)
     target, rest = await resolve_target(message, args, db, search=True)
@@ -59,27 +61,14 @@ async def _subject_plays(message: Message, command: CommandObject, kind: str, la
         count, _, _ = await db.subject_stats(target.user_id, kind, subject, from_ts, to_ts)
     name = " - ".join(subject)
 
-    url = music_url(subject[0], subject[1] if len(subject) > 1 else None, kind + "s")
+    url = music_url(subject[0], subject[1] if len(subject) > 1 else None, top_kind(kind))
     await message.reply(f"{user_link(target.lastfm_username)} has <b>{plural(count, 'play')}</b> on "
                         f"{link(name, url)}{_period_suffix(period)}.")
 
 
-@router.message(Command("artistplays", "ap"))
-async def artist_plays(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                       stats: Stats) -> None:
-    await _subject_plays(message, command, "artist", lastfm, db, stats)
-
-
-@router.message(Command("albumplays", "abp"))
-async def album_plays(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                      stats: Stats) -> None:
-    await _subject_plays(message, command, "album", lastfm, db, stats)
-
-
-@router.message(Command("trackplays", "tp"))
-async def track_plays(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                      stats: Stats) -> None:
-    await _subject_plays(message, command, "track", lastfm, db, stats)
+add_kind_commands(router, _subject_plays, {
+    "artist": ("artistplays", "ap"), "album": ("albumplays", "abp"), "track": ("trackplays", "tp"),
+})
 
 
 @router.message(Command("streak", "str", "combo"))
@@ -153,10 +142,12 @@ async def pace(message: Message, command: CommandObject, lastfm: LastFmClient, d
 
     days = max((now.timestamp() - start) / 86400, 1 / 24)
     per_day = count / days
-    goal_date = now + timedelta(days=(goal - total) / per_day)
+    reached = goal_date(now, goal - total, per_day)
+    if reached is None:
+        raise UserFacingError(f"At {per_day:,.2f} scrobbles a day, <b>{num(goal)}</b> is more than 200 years away.")
     await message.reply(
         f"At their current pace, {user_link(target.lastfm_username)} will reach "
-        f"<b>{num(goal)}</b> scrobbles on <b>{goal_date:%d %B %Y}</b>.\n"
+        f"<b>{num(goal)}</b> scrobbles on <b>{reached:%d %B %Y}</b>.\n"
         f"<i>Based on {per_day:,.1f} scrobbles per day: {num(count)} scrobbles over "
         f"{span(days)}{_period_suffix(period)}.</i>"
     )
@@ -211,7 +202,7 @@ async def overview_cmd(message: Message, command: CommandObject, db: Database, s
     await message.reply(truncate("\n".join(lines), TELEGRAM_TEXT_LIMIT))
 
 
-async def _artist_top(message: Message, command: CommandObject, kind: str, lastfm: LastFmClient, db: Database,
+async def _artist_top(message: Message, kind: str, command: CommandObject, lastfm: LastFmClient, db: Database,
                       stats: Stats) -> None:
     period, args = parse_period((command.args or "").split(), default=ALL_TIME, edges_only=True)
     target, rest = await resolve_target(message, args, db, search=True)
@@ -219,7 +210,7 @@ async def _artist_top(message: Message, command: CommandObject, kind: str, lastf
     await stats.require_index(target)
     (artist,) = await stats.canonical_subject("artist", (artist,))
 
-    from_ts, to_ts = period.bounds(tz=target.tz) if period != ALL_TIME else (0, 2**62)
+    from_ts, to_ts = period.bounds(tz=target.tz)
     rows = await db.top_from_plays(target.user_id, kind, from_ts, to_ts, limit=25, artist=artist)
     if not rows:
         raise UserFacingError(f"{user_link(target.lastfm_username)} has no plays on {esc(artist)}"
@@ -230,19 +221,10 @@ async def _artist_top(message: Message, command: CommandObject, kind: str, lastf
     await message.reply(truncate("\n".join(lines), TELEGRAM_TEXT_LIMIT))
 
 
-@router.message(Command("artisttracks", "at"))
-async def artist_tracks(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                        stats: Stats) -> None:
-    await _artist_top(message, command, "tracks", lastfm, db, stats)
+add_kind_commands(router, _artist_top, {"tracks": ("artisttracks", "at"), "albums": ("artistalbums", "aa")})
 
 
-@router.message(Command("artistalbums", "aa"))
-async def artist_albums(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                        stats: Stats) -> None:
-    await _artist_top(message, command, "albums", lastfm, db, stats)
-
-
-async def _discovery(message: Message, command: CommandObject, kind: str, lastfm: LastFmClient, db: Database,
+async def _discovery(message: Message, kind: str, command: CommandObject, lastfm: LastFmClient, db: Database,
                      stats: Stats) -> None:
     """Port of discoverydate + lastlistened: first and last time you played something."""
     target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
@@ -253,7 +235,7 @@ async def _discovery(message: Message, command: CommandObject, kind: str, lastfm
     name = " - ".join(subject)
     if not count:
         raise UserFacingError(f"{user_link(target.lastfm_username)} has never played {esc(name)}.")
-    url = music_url(subject[0], subject[1] if len(subject) > 1 else None, kind + "s")
+    url = music_url(subject[0], subject[1] if len(subject) > 1 else None, top_kind(kind))
     await message.reply(
         f"<b>{link(name, url)}</b> for {user_link(target.lastfm_username)}\n\n"
         f"Discovered: {_when(first, target)}\n"
@@ -262,19 +244,8 @@ async def _discovery(message: Message, command: CommandObject, kind: str, lastfm
     )
 
 
-@router.message(Command("discovery", "discoverydate", "lastlistened", "firstlistened", "dd", "ll"))
-async def discovery(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                    stats: Stats) -> None:
-    await _discovery(message, command, "artist", lastfm, db, stats)
-
-
-@router.message(Command("albumdiscovery", "abdd", "albumlastlistened"))
-async def album_discovery(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                          stats: Stats) -> None:
-    await _discovery(message, command, "album", lastfm, db, stats)
-
-
-@router.message(Command("trackdiscovery", "tdd", "tracklastlistened"))
-async def track_discovery(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                          stats: Stats) -> None:
-    await _discovery(message, command, "track", lastfm, db, stats)
+add_kind_commands(router, _discovery, {
+    "artist": ("discovery", "discoverydate", "lastlistened", "firstlistened", "dd", "ll"),
+    "album": ("albumdiscovery", "abdd", "albumlastlistened"),
+    "track": ("trackdiscovery", "tdd", "tracklastlistened"),
+})
