@@ -3,7 +3,7 @@
 A Python port of FMBot that runs on Telegram instead of Discord. It uses
 [aiogram 3](https://docs.aiogram.dev), httpx, SQLAlchemy 2 (async) and Pillow.
 
-Phases 1 to 4 of the port are done. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
+Phases 1 to 4 of the port are done, and phase 5 is under way. See [MIGRATION_PLAN.md](MIGRATION_PLAN.md) for what's done and what comes next.
 
 ## Setup
 
@@ -68,10 +68,14 @@ Or with Docker: `docker build -t fmbot-tg . && docker run --env-file .env -v fmb
 | `/autopost` | | Group admins: post the group's charts or a recap every Monday or on the 1st |
 | `/jumble`, `/pixelation` | `/j`, `/px` | Guess one of your artists from scrambled letters, or an album from a pixelated cover |
 | `/shortcut add <name> <command>` | `/sc` | Your own commands, e.g. `/mine` for `/fm lfm:you`; extra words are added to the end |
+| `/iceberg [period]` | `/ice` | Your artists from mainstream (tip) to obscure (bottom), banded by Last.fm listeners |
+| `/playtime [period]`, `/timeleaderboard` | `/pt`, `/tlb` | Listening time from track lengths; the group leaderboard version |
+| `/lyrics` | `/lyr` | Lyrics of what you're playing or `Artist - Track` (from LRCLIB) |
+| `/links`, `/spotify`, `/youtube`, `/deezer` | `/sp`, `/yt`, `/dz` | Links to a track |
 | `/topgenres [period]`, `/topcountries [period]` | `/tg`, `/tc` | Your top genres, or where your top artists are from |
 | `/genre [genre or artist]`, `/country [country or artist]` | `/g` | Your top artists in a genre or from a country; with an artist, its genres or country |
 | `/whoknowsgenre`, `/whoknowscountry` | `/wkg`, `/wkc` | Group leaderboard for a genre or country (`/fwkg`, `/fwkc` among your friends) |
-| `/chart [NxM]` | `/c` | Album collage, up to 10x10; `notitles` hides titles, `skip` leaves out albums without a cover |
+| `/chart [NxM]` | `/c` | Album collage, up to 10x10; `artists` for artist photos, `notitles` hides titles, `skip` leaves out ones without an image |
 
 Periods, with the same aliases as FMBot:
 - From Last.fm directly: `weekly` (default), `monthly`, `quarterly`, `half`, `yearly`, `alltime`
@@ -128,6 +132,19 @@ Disabled commands are ignored silently in that group and still work in private c
 
 Global who knows only counts imported histories. People who keep the default `/privacy chat` show
 as "Private user", except to themselves and in groups they're in.
+
+## Spotify-style data without Spotify
+
+FMBot gets artist photos, track lengths and popularity from Spotify. Since February 2026 Spotify's
+API needs the app owner to have Premium, allows 5 users in development mode and no longer returns
+popularity, so this port uses free sources instead:
+- Artist photos (`/artist`, `/chart artists`) and track lengths: Deezer's public API; lengths come
+  from Last.fm first. Plays of tracks with no known length count at your average length.
+- Iceberg: Last.fm listener counts instead of Spotify popularity.
+- Lyrics: LRCLIB. Links: exact Deezer links; Spotify and YouTube links open a search unless you set
+  `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` or `YOUTUBE_API_KEY`.
+
+All of it is cached per artist or track in the database and shared between users.
 
 ## Games
 

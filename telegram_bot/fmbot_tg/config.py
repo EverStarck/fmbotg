@@ -41,6 +41,10 @@ class Settings:
     fm_aliases: dict[int, dict[str, str]] = field(default_factory=dict)
     # MusicBrainz (artist countries) asks clients to identify themselves with a way to reach the operator
     musicbrainz_contact: str | None = None
+    # Optional: exact Spotify/YouTube links instead of search links
+    spotify_client_id: str | None = None
+    spotify_client_secret: str | None = None
+    youtube_api_key: str | None = None
 
     @property
     def user_agent(self) -> str:
@@ -58,4 +62,7 @@ class Settings:
             whoknows_max_members=int(os.getenv("WHOKNOWS_MAX_MEMBERS", "100")),
             fm_aliases=parse_fm_aliases(os.getenv("FM_ALIASES")),
             musicbrainz_contact=os.getenv("MUSICBRAINZ_CONTACT") or None,
+            spotify_client_id=os.getenv("SPOTIFY_CLIENT_ID") or None,
+            spotify_client_secret=os.getenv("SPOTIFY_CLIENT_SECRET") or None,
+            youtube_api_key=os.getenv("YOUTUBE_API_KEY") or None,
         )

@@ -92,7 +92,13 @@ Admins: /block /unblock — leave someone out of this group's leaderboards; /dis
 /globalwhoknows /gwka /gwkt — top listeners among everyone using this bot
 
 <b>Charts</b>
-/chart — album collage, e.g. <code>/chart 4x4 monthly</code>, add <code>notitles</code> to hide titles or <code>skip</code> to leave out albums without a cover
+/chart — album collage, e.g. <code>/chart 4x4 monthly</code>; add <code>artists</code> for artist photos, <code>notitles</code> to hide titles or <code>skip</code> to leave out ones without an image
+/iceberg — your artists from mainstream (tip) to obscure (bottom), by Last.fm listeners
+
+<b>More</b>
+/playtime — how long you've listened, optionally for a period (/timeleaderboard for the group)
+/lyrics — lyrics of what you're playing, or <code>/lyrics Artist - Track</code>
+/links /spotify /youtube /deezer — links to a track
 
 <b>Other users</b>: reply to their message, or add <code>@handle</code> or <code>lfm:username</code>."""
 

@@ -1,4 +1,4 @@
-"""/chart album collage (port of ChartSlashCommands / ChartService, album charts only)."""
+"""/chart album or artist collage (port of ChartSlashCommands / ChartService)."""
 
 import asyncio
 
@@ -10,9 +10,10 @@ from aiogram.types import BufferedInputFile, Message
 
 from ..charts import Tile, parse_size, render
 from ..context import Target, UserFacingError, resolve_target
-from ..db import Database
+from ..db import Database, name_key
 from ..formatting import esc, user_link
 from ..lastfm import LastFmClient
+from ..metadata import Metadata
 from ..periods import Period, parse_period
 from ..stats import Stats
 
@@ -33,12 +34,13 @@ async def _download(http: httpx.AsyncClient, url: str | None) -> bytes | None:
 
 @router.message(Command("chart", "c"))
 async def chart(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
-                stats: Stats) -> None:
+                stats: Stats, metadata: Metadata) -> None:
     period, args = parse_period((command.args or "").split())
 
     cols, rows = 3, 3
     titles = True
     skip_empty = False
+    artists = False
     remaining = []
     for arg in args:
         size = parse_size(arg)
@@ -48,13 +50,19 @@ async def chart(message: Message, command: CommandObject, lastfm: LastFmClient, 
             titles = False
         elif arg.lower() in ("skip", "s", "skipemptyimages"):
             skip_empty = True
+        elif arg.lower() in ("artists", "artist", "ar"):
+            artists = True
         else:
             remaining.append(arg)
     target, _ = await resolve_target(message, remaining, db)
 
     await message.bot.send_chat_action(message.chat.id, ChatAction.UPLOAD_PHOTO)
-    image = await album_chart(stats, lastfm, target, period, cols, rows, titles, skip_empty)
-    caption = f"{cols}x{rows} album chart for {user_link(target.lastfm_username)} · {esc(period.label)}"
+    if artists:
+        image = await artist_chart(stats, lastfm, metadata, target, period, cols, rows, titles, skip_empty)
+    else:
+        image = await album_chart(stats, lastfm, target, period, cols, rows, titles, skip_empty)
+    kind = "artist" if artists else "album"
+    caption = f"{cols}x{rows} {kind} chart for {user_link(target.lastfm_username)} · {esc(period.label)}"
     await message.reply_photo(BufferedInputFile(image, filename="chart.jpg"), caption=caption)
 
 
@@ -78,4 +86,20 @@ async def album_chart(stats: Stats, lastfm: LastFmClient, target: Target, period
              for item, cover in zip(top.items, covers) if cover or not skip_empty][:wanted]
     if not tiles:
         raise UserFacingError("None of those albums have a cover.")
+    return await asyncio.to_thread(render, tiles, cols, rows, titles)
+
+
+async def artist_chart(stats: Stats, lastfm: LastFmClient, metadata: Metadata, target: Target, period: Period,
+                       cols: int, rows: int, titles: bool = True, skip_empty: bool = False) -> bytes:
+    """Artist photo collage (FMBot's artist charts, with photos from Deezer instead of Spotify)."""
+    wanted = cols * rows
+    top = await stats.top(target, "artists", period, page=1, page_size=min(wanted * 2, 200) if skip_empty else wanted)
+    if not top.items:
+        raise UserFacingError(f"No artists for {user_link(target.lastfm_username)} ({esc(period.label)}).")
+    photos = (await metadata.images([item.name for item in top.items], wait=12)).values
+    images = await asyncio.gather(*(_download(lastfm.http, photos.get(name_key(item.name))) for item in top.items))
+    tiles = [Tile(image=image, title=item.name, subtitle=f"{item.playcount:,} plays")
+             for item, image in zip(top.items, images) if image or not skip_empty][:wanted]
+    if not tiles:
+        raise UserFacingError("None of those artists have a photo.")
     return await asyncio.to_thread(render, tiles, cols, rows, titles)

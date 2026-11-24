@@ -18,6 +18,7 @@ from .db import Database
 from .handlers import all_routers
 from .indexer import Indexer
 from .lastfm import LastFmClient, LastFmError
+from .links import MusicLinks
 from .metadata import Metadata
 from .middleware import TrackMembersMiddleware, membership_router
 from .migrate import upgrade as run_migrations
@@ -72,6 +73,10 @@ COMMANDS = [
     BotCommand(command="pixelation", description="Guess the album from a pixelated cover"),
     BotCommand(command="autopost", description="Post group charts on a schedule (admins)"),
     BotCommand(command="shortcut", description="Your own command shortcuts"),
+    BotCommand(command="iceberg", description="Your artists from mainstream to obscure"),
+    BotCommand(command="playtime", description="How long you've listened, optionally for a period"),
+    BotCommand(command="lyrics", description="Lyrics of what you're playing"),
+    BotCommand(command="links", description="Spotify, YouTube and Deezer links for a track"),
     BotCommand(command="crowns", description="Your crowns in this group"),
     BotCommand(command="crown", description="Who holds the crown for an artist"),
     BotCommand(command="crownleaderboard", description="Who has the most crowns here"),
@@ -103,8 +108,9 @@ def build_dispatcher(db: Database, lastfm: LastFmClient, settings: Settings, ind
     autoposter = autoposter or Autoposter(db, settings.whoknows_max_members)
     toggles = CommandToggles(db)
     shortcuts = Shortcuts(db, toggles)
+    links = MusicLinks(lastfm.http, settings.spotify_client_id, settings.spotify_client_secret, settings.youtube_api_key)
     dp = Dispatcher(db=db, lastfm=lastfm, settings=settings, indexer=indexer, stats=Stats(db, lastfm, indexer),
-                    metadata=metadata, toggles=toggles, shortcuts=shortcuts, autoposter=autoposter)
+                    metadata=metadata, toggles=toggles, shortcuts=shortcuts, autoposter=autoposter, links=links)
     dp.message.outer_middleware(TrackMembersMiddleware(db))
     # Shortcuts first, so a disabled command can't be reached through one
     dp.message.outer_middleware(ShortcutMiddleware(shortcuts))

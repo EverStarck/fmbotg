@@ -131,6 +131,22 @@ class ArtistMeta(Base):
     country_code: Mapped[str | None] = mapped_column(String(8))  # ISO 3166-1; "" = looked up, unknown
     country: Mapped[str | None] = mapped_column(String(128))
     country_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    image_url: Mapped[str | None] = mapped_column(String(512))  # Deezer artist photo; "" = none found
+    image_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    listeners: Mapped[int | None] = mapped_column(BigInteger)  # Last.fm listeners, the iceberg's popularity
+    listeners_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TrackMeta(Base):
+    """Track length and Deezer link, cached across users (port of the track lengths FMBot gets from Spotify)."""
+
+    __tablename__ = "track_metadata"
+
+    artist_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    track_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    duration_ms: Mapped[int] = mapped_column(Integer)  # 0 = unknown
+    deezer_url: Mapped[str | None] = mapped_column(String(256))
+    looked_up_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class Crown(Base):
@@ -789,7 +805,8 @@ class Database:
 
     async def save_artist_meta(self, artist: str, **values) -> None:
         """Upsert tags/tags_at or country_code/country/country_at for one artist."""
-        assert set(values) <= {"tags", "tags_at", "country_code", "country", "country_at"}, values
+        assert set(values) <= {"tags", "tags_at", "country_code", "country", "country_at", "image_url", "image_at",
+                               "listeners", "listeners_at"}, values
         for attempt in range(2):
             async with self.sessions() as session:
                 row = await session.get(ArtistMeta, name_key(artist))
@@ -911,3 +928,45 @@ class Database:
             return list(await session.scalars(
                 select(Autopost).where(Autopost.enabled.is_(True), Autopost.next_post_at <= now)
                 .order_by(Autopost.next_post_at).limit(limit)))
+
+    # --- phase 5: track lengths ---------------------------------------------------------------
+
+    async def track_meta(self, keys: list[tuple[str, str]]) -> dict[tuple[str, str], TrackMeta]:
+        found: dict[tuple[str, str], TrackMeta] = {}
+        async with self.sessions() as session:
+            for start in range(0, len(keys), 400):
+                chunk = keys[start:start + 400]
+                artists = {a for a, _ in chunk}
+                rows = await session.scalars(select(TrackMeta).where(
+                    TrackMeta.artist_key.in_(artists), TrackMeta.track_key.in_({t for _, t in chunk})))
+                wanted = set(chunk)
+                found.update({(r.artist_key, r.track_key): r for r in rows if (r.artist_key, r.track_key) in wanted})
+        return found
+
+    async def save_track_meta(self, artist: str, track: str, duration_ms: int, deezer_url: str | None) -> None:
+        key = (name_key(artist), name_key(track))
+        async with self.sessions() as session:
+            row = await session.get(TrackMeta, key)
+            if row is None:
+                session.add(TrackMeta(artist_key=key[0], track_key=key[1], duration_ms=duration_ms,
+                                      deezer_url=deezer_url, looked_up_at=utcnow()))
+            else:
+                row.duration_ms, row.deezer_url, row.looked_up_at = duration_ms, deezer_url, utcnow()
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()  # looked up twice at once; the other one saved it
+
+    async def track_playcounts(self, user_ids: list[int], from_ts: int, to_ts: int
+                               ) -> list[tuple[int, str, str, int]]:
+        """(user id, artist, track, plays) per user and track in a range, for listening time."""
+        if not user_ids:
+            return []
+        plays = func.count()
+        stmt = (
+            select(UserPlay.user_id, func.max(UserPlay.artist), func.max(UserPlay.track), plays)
+            .where(UserPlay.user_id.in_(user_ids), UserPlay.played_at >= from_ts, UserPlay.played_at < to_ts)
+            .group_by(UserPlay.user_id, UserPlay.artist_key, UserPlay.track_key)
+        )
+        async with self.sessions() as session:
+            return [(u, a, t, c) for u, a, t, c in await session.execute(stmt)]

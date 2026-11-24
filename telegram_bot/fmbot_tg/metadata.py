@@ -15,6 +15,7 @@ from datetime import timedelta
 
 import httpx
 
+from . import deezer
 from .db import Database, name_key, utcnow
 from .lastfm import LastFmClient, LastFmError
 
@@ -23,6 +24,8 @@ log = logging.getLogger(__name__)
 MUSICBRAINZ_URL = "https://musicbrainz.org/ws/2/artist"
 TAGS_STALE_AFTER = timedelta(days=90)
 COUNTRY_STALE_AFTER = timedelta(days=180)
+IMAGES_STALE_AFTER = timedelta(days=60)
+LISTENERS_STALE_AFTER = timedelta(days=30)
 MAX_GENRES = 6
 MIN_TAG_WEIGHT = 10  # Last.fm weights tags 0-100 relative to the artist's top tag
 
@@ -103,35 +106,37 @@ class Lookup:
 class _Queue:
     """Fetches each artist once, in the order asked, with limited concurrency and optional spacing."""
 
-    def __init__(self, fetch: Callable[[str], Awaitable[object]], workers: int, spacing: float = 0.0):
+    def __init__(self, fetch: Callable[..., Awaitable[object]], workers: int, spacing: float = 0.0,
+                 key: Callable[..., object] = name_key):
         self._fetch = fetch
         self._workers_wanted = workers
         self._spacing = spacing
-        self._queue: asyncio.Queue[tuple[str, asyncio.Future]] = asyncio.Queue()
-        self._inflight: dict[str, asyncio.Future] = {}
+        self._key = key
+        self._queue: asyncio.Queue[tuple[tuple, asyncio.Future]] = asyncio.Queue()
+        self._inflight: dict[object, asyncio.Future] = {}
         self._workers: list[asyncio.Task] = []
 
-    def request(self, artist: str) -> asyncio.Future:
-        key = name_key(artist)
+    def request(self, *item: str) -> asyncio.Future:
+        key = self._key(*item)
         future = self._inflight.get(key)
         if future is None:
             future = asyncio.get_running_loop().create_future()
             self._inflight[key] = future
-            self._queue.put_nowait((artist, future))
+            self._queue.put_nowait((item, future))
         if not self._workers:
             self._workers = [asyncio.create_task(self._work()) for _ in range(self._workers_wanted)]
         return future
 
     async def _work(self) -> None:
         while True:
-            artist, future = await self._queue.get()
+            item, future = await self._queue.get()
             try:
-                future.set_result(await self._fetch(artist))
+                future.set_result(await self._fetch(*item))
             except Exception as exc:  # one bad artist mustn't stop the queue
-                log.warning("Metadata lookup for %r failed: %s", artist, exc)
+                log.warning("Metadata lookup for %r failed: %s", item, exc)
                 future.set_result(FAILED)
             finally:
-                self._inflight.pop(name_key(artist), None)
+                self._inflight.pop(self._key(*item), None)
             if self._spacing:
                 await asyncio.sleep(self._spacing)
 
@@ -150,10 +155,46 @@ class Metadata:
         self._user_agent = user_agent
         self._tags = _Queue(self._fetch_tags, workers=6)
         self._countries = _Queue(self._fetch_country, workers=1, spacing=1.1)  # MusicBrainz: 1 request/second
+        self._images = _Queue(self._fetch_image, workers=3, spacing=0.2)  # Deezer: 50 requests per 5 seconds
+        self._listeners = _Queue(self._fetch_listeners, workers=6)
+        self._tracks = _Queue(self._fetch_track, workers=4, spacing=0.1,
+                              key=lambda artist, track: (name_key(artist), name_key(track)))
 
     async def close(self) -> None:
-        await self._tags.close()
-        await self._countries.close()
+        for queue in (self._tags, self._countries, self._images, self._listeners, self._tracks):
+            await queue.close()
+
+    async def _fetch_image(self, artist: str) -> object:
+        url = await deezer.artist_photo(self._http, artist)
+        await self._db.save_artist_meta(artist, image_url=url or "", image_at=utcnow())
+        return url
+
+    async def _fetch_listeners(self, artist: str) -> object:
+        try:
+            info = await self._lastfm.artist_info(artist)
+        except LastFmError as exc:
+            if exc.code != LastFmError.NOT_FOUND:
+                return FAILED
+            info = {}
+        listeners = int((info.get("stats") or {}).get("listeners") or 0)
+        await self._db.save_artist_meta(artist, listeners=listeners, listeners_at=utcnow())
+        return listeners
+
+    async def _fetch_track(self, artist: str, track: str) -> object:
+        """Length in ms from Last.fm, or Deezer when Last.fm doesn't know it (0 = unknown)."""
+        duration = 0
+        try:
+            info = await self._lastfm.track_info(artist, track)
+            duration = int(info.get("duration") or 0)
+        except LastFmError as exc:
+            if exc.code != LastFmError.NOT_FOUND:
+                return FAILED
+        found = None
+        if not duration:
+            found = await deezer.find_track(self._http, artist, track)
+            duration = found.duration_ms if found else 0
+        await self._db.save_track_meta(artist, track, duration, found.url if found else None)
+        return duration
 
     async def _fetch_tags(self, artist: str) -> object:
         try:
@@ -213,6 +254,43 @@ class Metadata:
                 return None, None
             return [t for t in row.tags.split("|") if t], row.tags_at
         return await self._lookup(artists, self._tags, read, TAGS_STALE_AFTER, wait, max_new)
+
+    async def images(self, artists: list[str], wait: float = 8.0, max_new: int = 100) -> Lookup:
+        """Artist photo URLs; None when Deezer has none."""
+        def read(row):
+            if row is None or row.image_at is None:
+                return None, None
+            return (row.image_url or None), row.image_at
+        return await self._lookup(artists, self._images, read, IMAGES_STALE_AFTER, wait, max_new)
+
+    async def listeners(self, artists: list[str], wait: float = 10.0, max_new: int = 500) -> Lookup:
+        """Last.fm listener counts, the iceberg's measure of how well known an artist is."""
+        def read(row):
+            if row is None or row.listeners_at is None:
+                return None, None
+            return row.listeners, row.listeners_at
+        return await self._lookup(artists, self._listeners, read, LISTENERS_STALE_AFTER, wait, max_new)
+
+    async def durations(self, tracks: list[tuple[str, str]], wait: float = 10.0, max_new: int = 400
+                        ) -> tuple[dict[tuple[str, str], int], int]:
+        """Track lengths in ms by (artist key, track key), known ones only, plus how many are still pending.
+        Tracks are asked for in the given order, so put the most played first."""
+        keys = list(dict.fromkeys((name_key(a), name_key(t)) for a, t in tracks))
+        names = {}
+        for artist, track in tracks:
+            names.setdefault((name_key(artist), name_key(track)), (artist, track))
+        cached = await self._db.track_meta(keys)
+        values = {key: row.duration_ms for key, row in cached.items() if row.duration_ms}
+        missing = [key for key in keys if key not in cached]
+        futures = {key: self._tracks.request(*names[key]) for key in missing[:max_new]}
+        if futures:
+            done, _ = await asyncio.wait(futures.values(), timeout=wait)
+            for key, future in futures.items():
+                if future in done and future.result() is not FAILED:
+                    if future.result():
+                        values[key] = future.result()
+                    missing.remove(key)
+        return values, len(missing)
 
     async def countries(self, artists: list[str], wait: float = 6.0, max_new: int = 300) -> Lookup:
         def read(row):

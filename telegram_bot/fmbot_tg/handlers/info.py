@@ -15,6 +15,7 @@ from ..formatting import (
     user_link,
 )
 from ..lastfm import LastFmClient, as_list, pick_image
+from ..metadata import Metadata
 from ..stats import Stats
 
 router = Router(name="info")
@@ -37,7 +38,8 @@ async def _send(message: Message, text: str, image: str | None) -> None:
 
 
 @router.message(Command("artist", "a", "artistinfo"))
-async def artist(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database) -> None:
+async def artist(message: Message, command: CommandObject, lastfm: LastFmClient, db: Database,
+                 metadata: Metadata) -> None:
     target, rest = await resolve_target(message, (command.args or "").split(), db, search=True)
     (name,) = await resolve_subject("artist", " ".join(rest), target, lastfm)
     info = await lastfm.artist_info(name, target.lastfm_username)
@@ -54,7 +56,9 @@ async def artist(message: Message, command: CommandObject, lastfm: LastFmClient,
     similar = [a.get("name", "") for a in as_list((info.get("similar") or {}).get("artist"))][:5]
     if similar:
         lines += ["", "Similar: " + ", ".join(esc(s) for s in similar)]
-    await message.reply(truncate("\n".join(lines), TELEGRAM_TEXT_LIMIT))
+    # Last.fm stopped serving artist photos; Deezer has them
+    photo = (await metadata.images([info["name"]], wait=4)).values.get(name_key(info["name"]))
+    await _send(message, "\n".join(lines), photo)
 
 
 @router.message(Command("album", "ab", "albuminfo"))

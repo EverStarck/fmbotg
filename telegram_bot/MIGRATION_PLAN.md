@@ -122,6 +122,15 @@ Done (migrations 0006 to 0009):
 
 ## Phase 5: integrations and platform
 
+Skipped by choice: Apple Music, supporters, Discogs, Spotify remote control, translations.
+
+Done so far (migration 0010):
+- Spotify's data, without Spotify (its API now needs a Premium owner and dropped popularity): Deezer artist
+  photos (`/artist`, `/chart artists`), track lengths from Last.fm then Deezer, `iceberg` banded by Last.fm
+  listeners, `playtime` and `timeleaderboard`
+- `lyrics` from LRCLIB (replaces Genius, whose API has no lyrics text)
+- `spotify`, `youtube`, `deezer`, `links`: exact links with optional Spotify/YouTube keys, search links otherwise
+
 | C# source | Notes |
 |---|---|
 | `SpotifyService` | Spotify links and previews (client credentials) |

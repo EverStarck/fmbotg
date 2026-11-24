@@ -166,3 +166,77 @@ def render_receipt(username: str, period_label: str, date_text: str, items: list
     out = io.BytesIO()
     image.save(out, format="PNG")
     return out.getvalue()
+
+
+# --- iceberg (port of PuppeteerService.CreatePopularityIcebergImage) ------------------------------
+
+ICEBERG_WIDTH, ICEBERG_HEIGHT = 1000, 1400
+WATERLINE = 360
+
+
+def _mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def render_iceberg(username: str, period_label: str, sections: list[tuple[str, list[str]]]) -> bytes:
+    """Ten depth bands, best known at the tip. `sections` is (label, artist names) from the top down."""
+    width, height = ICEBERG_WIDTH, ICEBERG_HEIGHT
+    canvas = Image.new("RGB", (width, height))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+
+    # Sky above the waterline, then water getting darker with depth
+    for y in range(height):
+        if y < WATERLINE:
+            color = _mix((196, 228, 247), (230, 244, 252), y / WATERLINE)
+        else:
+            color = _mix((38, 120, 178), (0, 18, 44), (y - WATERLINE) / (height - WATERLINE))
+        draw.line((0, y, width, y), fill=color)
+
+    # The berg: a narrow tip above water, widening below. Above water it's white; below, a lighter
+    # version of the water around it, so it fades with depth like a real one.
+    center = width // 2
+    outline = [(center - 30, 135), (center + 60, 190), (center + 165, WATERLINE), (center + 390, 640),
+               (center + 330, 1050), (center + 140, height - 40), (center - 170, height - 70),
+               (center - 380, 1000), (center - 410, 620), (center - 175, WATERLINE), (center - 95, 230)]
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).polygon(outline, fill=255)
+    berg = Image.blend(canvas, Image.new("RGB", (width, height), (255, 255, 255)), 0.32)
+    berg.paste((240, 248, 253), (0, 0, width, WATERLINE))
+    canvas.paste(berg, (0, 0), mask)
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    draw.line((0, WATERLINE, width, WATERLINE), fill=(255, 255, 255, 180), width=3)
+
+    title_font, label_font, name_font = _load_font(54), _load_font(22), _load_font(30)
+    draw.text((40, 30), _fit(draw, f"{username}'s iceberg", title_font, width - 80), font=title_font, fill=(20, 30, 45))
+    draw.text((40, 98), period_label, font=label_font, fill=(60, 80, 100))
+
+    top, bottom = 170, height - 50
+    band = (bottom - top) / max(1, len(sections))
+    for index, (label, names) in enumerate(sections):
+        y0 = top + index * band
+        dark = y0 + band / 2 > WATERLINE
+        text_color = (255, 255, 255) if dark else (20, 30, 45)
+        stroke = (0, 27, 58) if dark else (255, 255, 255)
+        draw.text((24, y0 + 6), label, font=label_font, fill=(200, 225, 245) if dark else (60, 80, 100))
+        # Up to two lines of names, centered in the band
+        lines, current = [], ""
+        for name in names:
+            candidate = f"{current}  ·  {name}" if current else name
+            if draw.textlength(candidate, font=name_font) > width - 120 and current:
+                lines.append(current)
+                current = name
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        lines = [_fit(draw, line, name_font, width - 120) for line in lines[:2]]
+        line_height = 38
+        y = y0 + (band - line_height * len(lines)) / 2 + 8
+        for line in lines:
+            draw.text((width / 2, y), line, font=name_font, fill=text_color, anchor="ma",
+                      stroke_width=2 if dark else 0, stroke_fill=stroke)
+            y += line_height
+
+    out = io.BytesIO()
+    canvas.save(out, format="PNG", optimize=True)
+    return out.getvalue()
