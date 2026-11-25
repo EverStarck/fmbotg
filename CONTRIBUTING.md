@@ -20,7 +20,30 @@ cp .env.example .env  # fill in the values
 uv run fmbotg
 ```
 
-Or with Docker: `docker build -t fmbotg . && docker run --env-file .env -v fmbot-data:/data fmbotg`
+### With Docker Compose (bot + Postgres)
+
+`docker-compose.yml` runs the bot with its own Postgres database. Fill in `.env` (including
+`POSTGRES_PASSWORD`; `DATABASE_URL` is set by the compose file), then:
+
+```bash
+docker compose up -d --build
+docker compose logs -f bot
+```
+
+The database lives in the `postgres-data` volume, so redeploys keep everyone's data.
+
+### On Coolify
+
+1. Create a resource from this repository and pick the **Docker Compose** build pack.
+2. Fill in the environment variables Coolify lists: `POSTGRES_PASSWORD`, `TELEGRAM_BOT_TOKEN`,
+   `LASTFM_API_KEY` and `LASTFM_API_SECRET` are required, the rest are optional.
+3. Leave the domain empty: the bot fetches updates from Telegram, nothing connects to it.
+4. Deploy. Run only one copy: two bots polling with the same token conflict.
+
+### Without Compose
+
+`docker build -t fmbotg . && docker run --env-file .env -v fmbot-data:/data fmbotg` runs the bot alone with
+SQLite in the `fmbot-data` volume.
 
 ## Getting API keys
 
