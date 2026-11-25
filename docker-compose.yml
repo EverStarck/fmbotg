@@ -8,7 +8,11 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+asyncpg://fmbotg:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db:5432/fmbotg
+      # The bot builds the database URL from these, escaping the password
+      POSTGRES_HOST: db
+      POSTGRES_USER: fmbotg
+      POSTGRES_DB: fmbotg
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN}
       LASTFM_API_KEY: ${LASTFM_API_KEY:?set LASTFM_API_KEY}
       LASTFM_API_SECRET: ${LASTFM_API_SECRET:?set LASTFM_API_SECRET}
@@ -36,7 +40,8 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fmbotg -d fmbotg"]
+      # -h checks TCP, which only opens once first-boot setup has finished
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U fmbotg -d fmbotg"]
       interval: 5s
       timeout: 5s
       retries: 10

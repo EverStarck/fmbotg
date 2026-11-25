@@ -23,7 +23,7 @@ uv run fmbotg
 ### With Docker Compose (bot + Postgres)
 
 `docker-compose.yml` runs the bot with its own Postgres database. Fill in `.env` (including
-`POSTGRES_PASSWORD`; `DATABASE_URL` is set by the compose file), then:
+`POSTGRES_PASSWORD`; the compose file points the bot at its database), then:
 
 ```bash
 docker compose up -d --build

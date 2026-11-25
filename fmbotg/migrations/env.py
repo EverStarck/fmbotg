@@ -1,9 +1,9 @@
 import asyncio
-import os
 
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from fmbotg.config import database_url_from_env
 from fmbotg.db import Base
 
 config = context.config
@@ -11,7 +11,7 @@ target_metadata = Base.metadata
 
 
 def _url() -> str:
-    return config.get_main_option("sqlalchemy.url") or os.getenv("DATABASE_URL", "sqlite+aiosqlite:///fmbot.db")
+    return config.get_main_option("sqlalchemy.url") or database_url_from_env()
 
 
 def _run(connection) -> None:

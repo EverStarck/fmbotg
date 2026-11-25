@@ -27,6 +27,22 @@ def parse_fm_aliases(raw: str | None) -> dict[int, dict[str, str]]:
         ) from exc
 
 
+def database_url_from_env() -> str:
+    """A Postgres URL from POSTGRES_HOST/USER/PASSWORD/DB if set (what docker compose passes), escaped so any
+    password works; otherwise DATABASE_URL; otherwise a local SQLite file."""
+    if host := os.getenv("POSTGRES_HOST"):
+        from sqlalchemy.engine import URL
+        return URL.create(
+            "postgresql+asyncpg",
+            username=os.getenv("POSTGRES_USER") or "fmbotg",
+            password=os.getenv("POSTGRES_PASSWORD") or None,
+            host=host,
+            port=int(os.getenv("POSTGRES_PORT") or 5432),
+            database=os.getenv("POSTGRES_DB") or "fmbotg",
+        ).render_as_string(hide_password=False)
+    return os.getenv("DATABASE_URL") or "sqlite+aiosqlite:///fmbot.db"
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_token: str
@@ -66,7 +82,7 @@ class Settings:
             lastfm_api_key=_required("LASTFM_API_KEY"),
             lastfm_api_secret=_required("LASTFM_API_SECRET"),
             lastfm_private_key=os.getenv("LASTFM_PRIVATE_KEY") or None,
-            database_url=os.getenv("DATABASE_URL") or "sqlite+aiosqlite:///fmbot.db",
+            database_url=database_url_from_env(),
             whoknows_max_members=int(os.getenv("WHOKNOWS_MAX_MEMBERS") or 100),
             fm_aliases=parse_fm_aliases(os.getenv("FM_ALIASES")),
             musicbrainz_contact=os.getenv("MUSICBRAINZ_CONTACT") or None,
