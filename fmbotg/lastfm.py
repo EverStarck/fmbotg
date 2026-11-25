@@ -1,0 +1,410 @@
+"""Async Last.fm API client (port of FMBot.LastFM)."""
+
+import asyncio
+import hashlib
+import logging
+import re
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
+from .cache import TTLCache
+from .domain import TopKind
+from .formatting import esc
+
+log = logging.getLogger(__name__)
+
+API_URL = "https://ws.audioscrobbler.com/2.0/"
+AUTH_URL = "https://www.last.fm/api/auth/"
+
+# Last.fm returns this image for anything without artwork (all artist images, nowadays).
+PLACEHOLDER_IMAGE_HASH = "2a96cbd8b46e442fc41c2b86b821562f"
+
+# Operation failed / service offline / temporarily unavailable / rate limited
+TRANSIENT_ERRORS = {8, 11, 16, 29}
+
+
+
+class LastFmError(Exception):
+    NOT_FOUND = 6
+    INVALID_SESSION = 9
+    TOKEN_NOT_AUTHORIZED = 14
+    TOKEN_EXPIRED = 15
+    LOGIN_REQUIRED = 17
+
+    def __init__(self, code: int, message: str):
+        super().__init__(f"{message} (code {code})")
+        self.code = code
+        self.message = message
+
+    @property
+    def is_transient(self) -> bool:
+        return self.code in TRANSIENT_ERRORS or self.code < 0
+
+    def user_message(self) -> str:
+        if self.code == self.NOT_FOUND:
+            return "Couldn't find that on Last.fm."
+        if self.code == self.LOGIN_REQUIRED:
+            return "That Last.fm profile has its recent listening hidden."
+        if self.code == self.INVALID_SESSION:
+            return "Your Last.fm session is no longer valid. Use /login to reconnect."
+        if self.code == 29:
+            return "Last.fm is rate limiting us right now. Try again in a minute."
+        if self.is_transient:
+            return "Last.fm is having issues right now. Please try again later."
+        return f"Last.fm returned an error: {esc(self.message)}"
+
+
+def sign(params: dict[str, str], secret: str) -> str:
+    """Last.fm api_sig: md5 of sorted key+value pairs (excluding format/callback) plus the secret."""
+    payload = "".join(f"{key}{params[key]}" for key in sorted(params) if key not in ("format", "callback"))
+    return hashlib.md5((payload + secret).encode("utf-8")).hexdigest()
+
+
+def as_list(value: Any) -> list:
+    """Last.fm returns a bare object instead of a one-element list when there is a single result."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def pick_image(images: Any) -> str | None:
+    by_size = {img.get("size"): img.get("#text") for img in as_list(images) if isinstance(img, dict)}
+    for size in ("extralarge", "mega", "large", "medium", "small"):
+        url = by_size.get(size)
+        if url and PLACEHOLDER_IMAGE_HASH not in url:
+            return url
+    return None
+
+
+def full_size_image(url: str) -> str:
+    """Last.fm image URLs carry a size segment (…/i/u/300x300/hash.jpg); removing it gives the original."""
+    return re.sub(r"/i/u/\d+x\d+/", "/i/u/", url)
+
+
+def _text(value: Any) -> str:
+    if isinstance(value, dict):
+        return value.get("#text") or value.get("name") or ""
+    return value or ""
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+@dataclass(frozen=True)
+class Scrobble:
+    track: str
+    artist: str
+    album: str
+    url: str
+    image: str | None
+    now_playing: bool
+    timestamp: int | None
+    loved: bool = False
+
+
+@dataclass(frozen=True)
+class RecentTracks:
+    tracks: list[Scrobble]
+    total: int
+    page: int = 1
+    total_pages: int = 1
+
+
+@dataclass(frozen=True)
+class TopItem:
+    name: str
+    artist: str | None
+    playcount: int
+    url: str
+    image: str | None
+    # Billboard mode: rank in the previous period, 0 when it wasn't there (new entry)
+    previous_rank: int | None = None
+
+
+@dataclass(frozen=True)
+class TopList:
+    items: list[TopItem]
+    total: int
+    page: int
+    total_pages: int
+
+
+def parse_recent_tracks(data: dict) -> RecentTracks:
+    root = data.get("recenttracks") or {}
+    tracks = []
+    for item in as_list(root.get("track")):
+        attr = item.get("@attr") or {}
+        date = item.get("date") or {}
+        tracks.append(
+            Scrobble(
+                track=item.get("name", ""),
+                artist=_text(item.get("artist")),
+                album=_text(item.get("album")),
+                url=item.get("url", ""),
+                image=pick_image(item.get("image")),
+                now_playing=str(attr.get("nowplaying", "")).lower() == "true",
+                timestamp=_int(date.get("uts")) or None,
+                loved=str(item.get("loved", "0")) == "1",
+            )
+        )
+    attr = root.get("@attr") or {}
+    return RecentTracks(tracks=tracks, total=_int(attr.get("total")), page=_int(attr.get("page")) or 1,
+                        total_pages=_int(attr.get("totalPages")) or 1)
+
+
+def parse_top(data: dict, kind: TopKind) -> TopList:
+    root = data.get(f"top{kind}") or {}
+    attr = root.get("@attr") or {}
+    items = [
+        TopItem(
+            name=item.get("name", ""),
+            artist=_text(item.get("artist")) if kind != "artists" else None,
+            playcount=_int(item.get("playcount")),
+            url=item.get("url", ""),
+            image=pick_image(item.get("image")),
+        )
+        for item in as_list(root.get(kind[:-1]))
+    ]
+    return TopList(
+        items=items,
+        total=_int(attr.get("total")),
+        page=_int(attr.get("page")) or 1,
+        total_pages=_int(attr.get("totalPages")) or 1,
+    )
+
+
+class LastFmClient:
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        private_key: str | None = None,
+        http: httpx.AsyncClient | None = None,
+        max_concurrency: int = 8,
+        requests_per_second: float = 0,
+    ):
+        self.api_key = api_key
+        self._secret = api_secret
+        self._private_key = private_key
+        self._http = http or httpx.AsyncClient(timeout=15)
+        self._sem = asyncio.Semaphore(max_concurrency)
+        # Spacing between request starts, so background lookups and big commands together stay under
+        # Last.fm's rate limit (about 5 per second per key). 0 = no limit (tests).
+        self._interval = 1 / requests_per_second if requests_per_second else 0.0
+        self._rate_lock = asyncio.Lock()
+        self._next_slot = 0.0
+        self._playcounts = TTLCache(ttl_seconds=300)
+
+    @property
+    def http(self) -> httpx.AsyncClient:
+        return self._http
+
+    async def close(self) -> None:
+        await self._http.aclose()
+
+    async def _wait_for_slot(self) -> None:
+        if not self._interval:
+            return
+        loop = asyncio.get_running_loop()
+        async with self._rate_lock:
+            now = loop.time()
+            slot = max(now, self._next_slot)
+            self._next_slot = slot + self._interval
+        if slot > now:
+            await asyncio.sleep(slot - now)
+
+    def auth_url(self, token: str) -> str:
+        return f"{AUTH_URL}?api_key={self.api_key}&token={token}"
+
+    async def call(self, method: str, *, signed: bool = False, retries: int = 2, post: bool = False,
+                   **params: Any) -> dict:
+        """`post=True` for write methods (track.love etc.), which Last.fm only accepts as POST."""
+        query = {key: str(value) for key, value in params.items() if value is not None}
+        signed = signed or "sk" in query
+        query["method"] = method
+        query["api_key"] = self.api_key if signed or not self._private_key else self._private_key
+        if signed:
+            query["api_sig"] = sign(query, self._secret)
+        query["format"] = "json"
+
+        last_error: LastFmError | None = None
+        for attempt in range(retries + 1):
+            if attempt:
+                await asyncio.sleep(0.6 * attempt)
+            try:
+                await self._wait_for_slot()
+                async with self._sem:
+                    if post:
+                        response = await self._http.post(API_URL, data=query)
+                    else:
+                        response = await self._http.get(API_URL, params=query)
+            except httpx.HTTPError as exc:
+                log.warning("Last.fm %s transport error: %s", method, exc)
+                last_error = LastFmError(-1, "Could not reach Last.fm")
+                continue
+
+            if response.status_code >= 500:
+                last_error = LastFmError(-response.status_code, f"Last.fm server error {response.status_code}")
+                continue
+
+            try:
+                data = response.json()
+            except ValueError:
+                last_error = LastFmError(-2, "Last.fm returned an invalid response")
+                continue
+
+            if isinstance(data, dict) and "error" in data:
+                error = LastFmError(_int(data["error"]), data.get("message", "Unknown error"))
+                if error.is_transient:
+                    last_error = error
+                    if error.code == 29:  # rate limited: back off longer than for other hiccups
+                        await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                raise error
+            return data
+
+        assert last_error is not None
+        raise last_error
+
+    # --- auth ---------------------------------------------------------------------------
+
+    async def get_token(self) -> str:
+        data = await self.call("auth.getToken", signed=True)
+        return data["token"]
+
+    async def get_session(self, token: str) -> tuple[str, str]:
+        """Returns (username, session_key). Raises code 14 while the user hasn't approved yet."""
+        data = await self.call("auth.getSession", signed=True, retries=0, token=token)
+        session = data["session"]
+        return session["name"], session["key"]
+
+    # --- user ---------------------------------------------------------------------------
+
+    async def scrobble_count(self, username: str, from_ts: int | None = None, to_ts: int | None = None,
+                             session_key: str | None = None) -> int:
+        """Scrobbles in a time range, read from the `total` of a one-item recent tracks page."""
+        result = await self.recent_tracks(username, limit=1, session_key=session_key, from_ts=from_ts, to_ts=to_ts,
+                                          extended=False)
+        return result.total
+
+    async def scrobble_at(self, username: str, number: int, total: int,
+                          session_key: str | None = None) -> Scrobble | None:
+        """The `number`th scrobble ever (1-based), given the current total (port of GetMilestoneScrobbleAsync)."""
+        result = await self.recent_tracks(username, limit=1, session_key=session_key, page=total - number + 1)
+        scrobbles = [s for s in result.tracks if s.timestamp]
+        return scrobbles[-1] if scrobbles else None
+
+    async def loved_tracks(self, username: str, limit: int = 10, page: int = 1) -> RecentTracks:
+        data = await self.call("user.getLovedTracks", user=username, limit=limit, page=page)
+        root = data.get("lovedtracks") or {}
+        return parse_recent_tracks({"recenttracks": root})
+
+    async def love(self, artist: str, track: str, session_key: str, loved: bool = True) -> None:
+        await self.call("track.love" if loved else "track.unlove", post=True, artist=artist, track=track,
+                        sk=session_key)
+
+    async def scrobble(self, artist: str, track: str, session_key: str, album: str | None = None,
+                       timestamp: int | None = None) -> bool:
+        """Returns False when Last.fm ignored the scrobble (e.g. filtered as spam or a duplicate)."""
+        data = await self.call(
+            "track.scrobble", post=True, retries=0, artist=artist, track=track, album=album,
+            timestamp=timestamp or int(time.time()), sk=session_key,
+        )
+        accepted = ((data.get("scrobbles") or {}).get("@attr") or {}).get("accepted")
+        return _int(accepted) > 0
+
+    async def user_info(self, username: str) -> dict:
+        return (await self.call("user.getInfo", user=username))["user"]
+
+    async def following(self, username: str, limit: int = 50) -> list[str]:
+        """Who the user follows on Last.fm (user.getFriends). Empty if they follow nobody."""
+        try:
+            data = await self.call("user.getFriends", user=username, limit=limit)
+        except LastFmError as exc:
+            if exc.code == LastFmError.NOT_FOUND:
+                return []
+            raise
+        return [u["name"] for u in as_list((data.get("friends") or {}).get("user")) if u.get("name")]
+
+    async def recent_tracks(
+        self,
+        username: str,
+        limit: int = 10,
+        session_key: str | None = None,
+        *,
+        page: int = 1,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        extended: bool = True,
+    ) -> RecentTracks:
+        """Newest first. `from_ts`/`to_ts` are unix seconds; Last.fm accepts up to 1000 per page."""
+        data = await self.call(
+            "user.getRecentTracks", user=username, limit=limit, page=page, extended=int(extended),
+            sk=session_key, **{"from": from_ts, "to": to_ts},
+        )
+        return parse_recent_tracks(data)
+
+    async def top(self, username: str, kind: TopKind, period: str, limit: int = 10, page: int = 1) -> TopList:
+        method = f"user.getTop{kind.capitalize()}"
+        data = await self.call(method, user=username, period=period, limit=limit, page=page)
+        return parse_top(data, kind)
+
+    # --- metadata -----------------------------------------------------------------------
+
+    async def artist_info(self, artist: str, username: str | None = None) -> dict:
+        data = await self.call("artist.getInfo", artist=artist, username=username, autocorrect=1)
+        return data["artist"]
+
+    async def artist_tags(self, artist: str) -> list[tuple[str, int]]:
+        """(tag, weight 0-100) for an artist, most used first."""
+        data = await self.call("artist.getTopTags", artist=artist, autocorrect=1)
+        return [(t["name"], _int(t.get("count"))) for t in as_list((data.get("toptags") or {}).get("tag"))
+                if t.get("name")]
+
+    async def album_info(self, artist: str, album: str, username: str | None = None) -> dict:
+        data = await self.call("album.getInfo", artist=artist, album=album, username=username, autocorrect=1)
+        return data["album"]
+
+    async def track_info(self, artist: str, track: str, username: str | None = None) -> dict:
+        data = await self.call("track.getInfo", artist=artist, track=track, username=username, autocorrect=1)
+        return data["track"]
+
+    async def search_album(self, query: str) -> tuple[str, str] | None:
+        data = await self.call("album.search", album=query, limit=1)
+        matches = as_list(((data.get("results") or {}).get("albummatches") or {}).get("album"))
+        return (matches[0]["artist"], matches[0]["name"]) if matches else None
+
+    async def search_track(self, query: str) -> tuple[str, str] | None:
+        data = await self.call("track.search", track=query, limit=1)
+        matches = as_list(((data.get("results") or {}).get("trackmatches") or {}).get("track"))
+        return (matches[0]["artist"], matches[0]["name"]) if matches else None
+
+    async def user_playcount(self, kind: str, names: tuple[str, ...], username: str) -> int:
+        """Playcount of one user for an artist (names=(artist,)), album or track ((artist, title))."""
+        key = (kind, tuple(n.lower() for n in names), username.lower())
+        cached = self._playcounts.get(key)
+        if cached is not None:
+            return cached
+        try:
+            if kind == "artist":
+                info = await self.artist_info(names[0], username)
+                count = _int((info.get("stats") or {}).get("userplaycount"))
+            elif kind == "album":
+                count = _int((await self.album_info(names[0], names[1], username)).get("userplaycount"))
+            else:
+                count = _int((await self.track_info(names[0], names[1], username)).get("userplaycount"))
+        except LastFmError as exc:
+            if exc.code != LastFmError.NOT_FOUND:
+                raise
+            count = 0
+        self._playcounts.set(key, count)
+        return count
